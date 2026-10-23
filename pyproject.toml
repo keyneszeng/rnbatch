@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rnbatch"
+version = "0.1.0"
+description = "Batch rename mixed files to one consistent name, using a keyword read from a source document."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["rename", "batch-rename", "file-management", "ocr", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Desktop Environment :: File Managers",
+]
+dependencies = []
+
+[project.optional-dependencies]
+# 文档正文抽取（缺哪个降级哪个，不装也能改纯文件名）
+docs = ["python-docx>=1.1", "python-pptx>=0.6.21", "openpyxl>=3.1", "pypdf>=4.0"]
+# 图片 OCR（仅 macOS，走系统 Vision 框架，离线）
+ocr = [
+    "pyobjc-framework-Vision>=10.0 ; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10.0 ; sys_platform == 'darwin'",
+    "Pillow>=10.0",
+]
+all = [
+    "python-docx>=1.1", "python-pptx>=0.6.21", "openpyxl>=3.1", "pypdf>=4.0",
+    "Pillow>=10.0",
+    "pyobjc-framework-Vision>=10.0 ; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10.0 ; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+rnbatch = "rnbatch.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
