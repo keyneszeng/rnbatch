@@ -204,3 +204,14 @@ def extract_text(p: Path, limit: int = 4000) -> str:
         t = f"（解析失败：{type(e).__name__}: {e}）"
     t = re.sub(r"\n{3,}", "\n\n", t).strip()
     return t[:limit]
+
+
+# 抽正文的优先级：文档最先，照片最后（OCR 最慢，且命中率低于正文）
+SOURCE_PRIORITY = {"文档": 0, "PDF": 1, "演示": 2, "表格": 3}
+
+
+def preferred_sources(files, n: int = 3):
+    """从一堆文件里挑最可能藏着关键词的几个，避免一上来就 OCR 一堆照片。"""
+    def rank(f):
+        return (SOURCE_PRIORITY.get(type_of(f.suffix), 5), str(f).lower())
+    return sorted(files, key=rank)[:n]

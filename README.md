@@ -7,6 +7,16 @@
 > 而项目名「星海中心」只写在其中一份会议纪要里。
 > 你要的是：所有文件都以「星海中心」为名、顺序编号、互不冲突、随时能反悔。
 
+![rnbatch 本地应用界面](docs/screenshot.png)
+
+三种形态，同一个引擎：
+
+| 形态 | 命令 | 适合谁 |
+|---|---|---|
+| **本地 Web 应用** | `rnbatch serve` | 不想碰命令行的人。浏览器里点几下就完成 |
+| **命令行** | `rnbatch preview / apply` | 脚本、批处理、CI |
+| **MCP server** | `rnbatch mcp` | 任何 agent（WorkBuddy / Claude Code / Cursor / Cline…）直接调用 |
+
 ```bash
 $ rnbatch extract 会议纪要.docx
 会议主题：星海中心项目 一期交付启动会
@@ -74,7 +84,62 @@ pip install -e .
 
 ---
 
-## 用法
+## 用法 · 本地 Web 应用
+
+```bash
+rnbatch serve            # 默认 127.0.0.1:8765，自动开浏览器
+rnbatch serve --port 9000 --no-browser
+```
+
+四步：**选文件夹 → 读正文挑关键词 → 定规则 → 预览并执行**。
+
+- **选文件夹**用 macOS 原生选择器（服务端调 `osascript`），不用手打路径。
+- **读正文**会自动优先读文档、PDF、PPT，照片放最后（OCR 慢且命中率低）。
+  右侧给出候选关键词，点一下就用 —— 每个候选都标了依据（含「项目/工程」、机构名、出现 N 次）。
+- **执行前必须过预览表**，带蓝色竖线的行才会被改动。
+- 执行后底部弹出提示，带「撤销」按钮。
+
+深链：`http://127.0.0.1:8765/?t=<token>&path=<urlencoded路径>&kw=星海中心`
+可以直接打开某个文件夹并预填规则，适合做成书签。
+
+> **为什么不是云端网页版**：文件是用户的核心资产，真正的痛点不是"没有界面"，
+> 是"不敢把文件传上去"。所以后端跑在 `127.0.0.1`，浏览器只当画布用 ——
+> 界面体验和网页版一样，但一个字节都不出机器。这一层也是将来包成桌面版的地基。
+
+## 用法 · MCP（任何 agent 可调用）
+
+```bash
+rnbatch mcp          # stdio 传输，JSON-RPC 2.0
+```
+
+在 MCP 客户端里加一行配置即可：
+
+```json
+{
+  "mcpServers": {
+    "rnbatch": { "command": "rnbatch", "args": ["mcp"] }
+  }
+}
+```
+
+暴露 6 个工具：
+
+| 工具 | 作用 |
+|---|---|
+| `list_files` | 列目录（名称/类型/大小） |
+| `extract_text` | 抽正文 + 返回候选关键词 |
+| `preview_rename` | 预览改名结果，**不动文件** |
+| `apply_rename` | 执行改名，返回 undo 句柄 |
+| `undo_rename` | 撤销 |
+| `recent_renames` | 最近记录 |
+
+server 的 `initialize` 里带了一段 `instructions`，明确告诉 agent
+**「不要在用户确认前直接 apply」** —— 协议层就把安全边界写进去了。
+
+零第三方依赖：协议本身就是换行分隔的 JSON-RPC，不需要装 MCP SDK。
+细节见 [docs/AGENT.md](docs/AGENT.md)。
+
+## 用法 · 命令行
 
 ### 1. 抽正文
 
@@ -153,38 +218,49 @@ rnbatch logs              # 看看历史记录
 
 ```
 src/rnbatch/
-├── extract.py   正文抽取（docx/pptx/xlsx/pdf/纯文本/图片OCR）
-├── engine.py    模板渲染 · 冲突消解 · 两阶段改名 · 撤销
-└── cli.py       命令行
+├── engine.py      模板渲染 · 冲突消解 · 两阶段改名 · 撤销   ← 核心，零依赖
+├── extract.py     正文抽取（docx/pptx/xlsx/pdf/纯文本/图片OCR）
+├── keywords.py    候选关键词启发式打分
+├── cli.py         命令行
+├── server.py      本地 Web 应用（HTTP + 原生文件夹选择器）
+├── mcp_server.py  MCP server（stdio JSON-RPC，零依赖）
+└── web/index.html 单页界面
 ```
 
-引擎是纯函数式的：`plan()` 只算不碰文件，`apply_plan()` 才落盘。
+分层原则：**引擎不知道界面的存在**。CLI、Web、MCP 三个入口都只是
+`plan()` / `apply_plan()` / `undo()` 的薄包装，所以三者行为永远一致，
+新增入口的成本接近于零。
+
+引擎还是纯函数式的：`plan()` 只算不碰文件，`apply_plan()` 才落盘。
 所以测试可以在临时目录里跑完整流程，不需要 mock 文件系统。
 
 ```bash
-python -m unittest discover -s tests
+python -m unittest discover -s tests     # 40 个测试
 ```
 
 ---
 
 ## 集成
 
-- `integrations/workbuddy/SKILL.md` —— 给 [WorkBuddy](https://www.workbuddy.cn) 用的技能定义：
-  让 AI 读正文、判断关键词、复述确认，再调 CLI 执行。
-- `integrations/macos/` —— 拖放式 App 的 AppleScript 源码（拖文件上去 → 输关键词 → 选模板 → 终端确认）。
+- `integrations/workbuddy/SKILL.md` —— 给 [WorkBuddy](https://www.workbuddy.cn) 用的技能定义。
+- `integrations/macos/` —— 拖放式 App 的 AppleScript 源码（不想开终端时用）。
+- MCP 配置见 [docs/AGENT.md](docs/AGENT.md)，覆盖 Claude Code / Cursor / Cline 等客户端。
 
 ---
 
 ## 状态
 
-`v0.1.0` —— 能用，跑在真实项目文件夹上验证过（改名 + 回滚）。**还不是产品。**
+`v0.2.0` —— 三种形态都能跑，在真实项目文件夹上验证过（改名 + 回滚 + 40 个测试）。
+**接近可用，还不是产品。**
 
 已知限制：
 
-- 扫描版 PDF（无文字层）读不出正文 —— 需要 OCR 层，目前只对图片做 OCR。
-- 关键词判断靠人或 AI，没有内置模型；这是设计选择，不是缺陷（见 [docs/COMPETITIVE.md](docs/COMPETITIVE.md)）。
-- 只支持本地文件系统，不做跨卷/网络盘的原子改名。
-- 无 GUI（macOS 拖放 App 是薄壳）。
+- 扫描版 PDF（无文字层）读不出正文 —— 目前只对图片做 OCR，PDF 还没接。
+- 关键词候选是启发式打分，不是模型判断。够用，但不如 LLM 准；
+  真正的判断仍建议交给 agent 或人。
+- 只支持本地文件系统，不做跨卷 / 网络盘的原子改名。
+- Web 应用的文件夹选择器依赖 macOS `osascript`；其他平台要手输路径。
+- 没有打包成独立 .app，启动要一条命令。
 
 后续方向见 [docs/ROADMAP.md](docs/ROADMAP.md)，商业化思考见 [docs/COMPETITIVE.md](docs/COMPETITIVE.md)。
 

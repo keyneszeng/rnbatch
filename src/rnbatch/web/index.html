@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rnbatch · 文件命名一致化</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --line:#e4e7ec; --line-2:#eef0f3;
+    --ink:#14181f; --ink-2:#5b6472; --ink-3:#98a1ae;
+    --accent:#2f6bed; --accent-soft:#eef3fe; --accent-ink:#1c4bc4;
+    --ok:#0f8a5f; --ok-soft:#e8f6f0; --warn:#b45309; --warn-soft:#fdf4e6;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:960px;margin:0 auto;padding:28px 24px 80px}
+
+  header{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+  h1{font-size:20px;font-weight:650;letter-spacing:-.01em;margin:0}
+  .tag{font-size:12px;color:var(--ink-3);font-family:var(--mono)}
+  .lede{color:var(--ink-2);font-size:13px;margin:0 0 24px}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        padding:18px 20px;margin-bottom:14px}
+  .card.hollow{background:transparent;border-style:dashed}
+  .step{display:flex;align-items:center;gap:9px;margin-bottom:14px}
+  .num{width:20px;height:20px;border-radius:50%;background:var(--accent-soft);
+       color:var(--accent-ink);font-size:11px;font-weight:700;
+       display:grid;place-items:center;flex:none}
+  .step h2{font-size:13.5px;font-weight:600;margin:0;letter-spacing:.01em}
+  .step .hint{color:var(--ink-3);font-size:12px;margin-left:auto}
+
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  input[type=text],select{
+    font:inherit;font-size:13px;color:var(--ink);background:#fff;
+    border:1px solid var(--line);border-radius:8px;padding:8px 11px;outline:none;
+    transition:border-color .15s,box-shadow .15s;
+  }
+  input[type=text]:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  input[type=text]{flex:1;min-width:180px;font-family:var(--mono);font-size:12.5px}
+  select{font-family:var(--mono);font-size:12.5px}
+  button{
+    font:inherit;font-size:13px;font-weight:550;cursor:pointer;
+    border-radius:8px;padding:8px 15px;border:1px solid var(--line);
+    background:#fff;color:var(--ink);transition:all .15s;white-space:nowrap;
+  }
+  button:hover:not(:disabled){border-color:#cfd5de;background:#fafbfc}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover:not(:disabled){background:var(--accent-ink);border-color:var(--accent-ink)}
+  button.ghost{border-color:transparent;color:var(--ink-2)}
+  button.ghost:hover:not(:disabled){background:#f0f2f5;border-color:transparent}
+
+  .chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;font-size:12.5px;
+    padding:5px 11px;border-radius:999px;border:1px solid var(--line);
+    background:#fff;cursor:pointer;transition:all .12s;font-family:var(--mono);
+  }
+  .chip:hover{border-color:var(--accent);color:var(--accent-ink)}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .chip .why{font-size:10.5px;opacity:.6;font-family:-apple-system,sans-serif}
+
+  .body-text{
+    margin-top:12px;max-height:150px;overflow:auto;background:#fbfcfd;
+    border:1px solid var(--line-2);border-radius:8px;padding:11px 13px;
+    font-family:var(--mono);font-size:11.5px;line-height:1.7;color:var(--ink-2);
+    white-space:pre-wrap;word-break:break-word;
+  }
+
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+  th{
+    text-align:left;font-family:-apple-system,sans-serif;font-size:11.5px;
+    font-weight:600;color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em;
+    padding:0 10px 8px;border-bottom:1px solid var(--line);
+  }
+  td{padding:7px 10px;border-bottom:1px solid var(--line-2);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  tr.changed td:first-child{box-shadow:inset 2px 0 0 var(--accent)}
+  td.from{color:var(--ink-2);word-break:break-all}
+  td.to{color:var(--ink);font-weight:500;word-break:break-all}
+  td.arrow{color:var(--ink-3);width:24px;text-align:center;padding-left:0;padding-right:0}
+  tr.same td.to{color:var(--ink-3);font-weight:400}
+  .scroll{max-height:420px;overflow:auto;margin:0 -20px;padding:0 20px}
+
+  .bar{display:flex;align-items:center;gap:12px;margin-top:16px;flex-wrap:wrap}
+  .stat{font-size:12.5px;color:var(--ink-2)}
+  .stat b{color:var(--ink);font-weight:650}
+
+  .toast{
+    position:fixed;left:50%;bottom:28px;transform:translate(-50%,16px);
+    background:#14181f;color:#fff;padding:11px 18px;border-radius:10px;
+    font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,.22);
+    opacity:0;pointer-events:none;transition:all .22s;z-index:50;max-width:80vw;
+  }
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+  .toast.err{background:#8a1f1f}
+  .toast .undo{color:#8fb4ff;cursor:pointer;text-decoration:underline;margin-left:10px}
+
+  .empty{color:var(--ink-3);font-size:13px;padding:26px 0;text-align:center}
+  .meta{font-size:11.5px;color:var(--ink-3);margin-top:10px;font-family:var(--mono)}
+  .switch{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2);cursor:pointer;user-select:none}
+  .switch input{accent-color:var(--accent)}
+  .spin{width:12px;height:12px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;
+        border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-2px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>rnbatch</h1>
+    <span class="tag">v0.2 · local</span>
+  </header>
+  <p class="lede">从一份文件里读出关键词，让整个文件夹的名字变一致。所有处理都在本机完成。</p>
+
+  <!-- 1 文件夹 -->
+  <section class="card">
+    <div class="step"><span class="num">1</span><h2>选择文件夹</h2>
+      <span class="hint" id="dirHint"></span></div>
+    <div class="row">
+      <button class="primary" id="btnPick">选择文件夹…</button>
+      <input type="text" id="pathInput" placeholder="或粘贴路径，如 ~/Desktop/星海中心">
+      <button id="btnLoad">载入</button>
+    </div>
+    <div class="meta" id="fileMeta"></div>
+  </section>
+
+  <!-- 2 关键词 -->
+  <section class="card">
+    <div class="step"><span class="num">2</span><h2>读正文，确定关键词</h2>
+      <span class="hint">从文档 / 图片里抽字，给出候选</span></div>
+    <div class="row">
+      <button id="btnExtract" disabled>读取正文</button>
+      <span class="stat" id="extractStat"></span>
+    </div>
+    <div class="chips" id="chips"></div>
+    <div class="body-text" id="bodyText" style="display:none"></div>
+  </section>
+
+  <!-- 3 规则 -->
+  <section class="card">
+    <div class="step"><span class="num">3</span><h2>命名规则</h2></div>
+    <div class="row">
+      <input type="text" id="kw" placeholder="关键词（项目名 / 人名 / 公司简称）" style="max-width:280px">
+      <select id="tpl">
+        <option value="{kw}-{n:02}">{kw}-{n:02}　→　星海中心-01.jpg</option>
+        <option value="{kw}-{n:02}-{type}">{kw}-{n:02}-{type}　→　星海中心-01-照片.jpg</option>
+        <option value="{kw}-{orig}">{kw}-{orig}　→　星海中心-方案汇报.pptx</option>
+        <option value="{kw}-{date}-{n:02}">{kw}-{date}-{n:02}　→　星海中心-20261018-01.jpg</option>
+        <option value="{type}-{kw}-{n:02}">{type}-{kw}-{n:02}　→　照片-星海中心-01.jpg</option>
+      </select>
+      <select id="sort">
+        <option value="name">按文件名</option>
+        <option value="date">按修改时间</option>
+        <option value="mtime_desc">按修改时间（倒序）</option>
+        <option value="size">按大小</option>
+      </select>
+      <label class="switch"><input type="checkbox" id="recursive">递归子目录</label>
+    </div>
+    <div class="bar">
+      <button class="primary" id="btnPreview" disabled>预览改名</button>
+      <span class="stat" id="previewStat"></span>
+    </div>
+  </section>
+
+  <!-- 4 结果 -->
+  <section class="card" id="resultCard" style="display:none">
+    <div class="step"><span class="num">4</span><h2>确认并执行</h2>
+      <span class="hint">带竖线的行会被改动</span></div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th style="width:44%">原文件名</th><th style="width:24px"></th><th>新文件名</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="bar">
+      <button class="primary" id="btnApply">执行改名</button>
+      <button id="btnUndo" style="display:none">撤销上一次</button>
+      <span class="stat" id="applyStat"></span>
+    </div>
+  </section>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = "__TOKEN__";
+const q = new URLSearchParams(location.search).get("t") || TOKEN;
+const S = { dir:"", files:[], rows:[] };
+
+const $ = id => document.getElementById(id);
+
+async function api(path, payload){
+  const r = await fetch(path + "?t=" + encodeURIComponent(q), {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(payload || {})
+  });
+  const data = await r.json().catch(()=>({ok:false,error:"响应不是合法 JSON"}));
+  if(!data.ok && !data.cancelled) throw new Error(data.error || "请求失败");
+  return data;
+}
+
+let toastTimer;
+function toast(msg, opts={}){
+  const el = $("toast");
+  el.className = "toast show" + (opts.error ? " err" : "");
+  el.innerHTML = msg + (opts.undo ? '<span class="undo" id="toastUndo">撤销</span>' : "");
+  clearTimeout(toastTimer);
+  if(opts.undo){
+    $("toastUndo").onclick = () => { el.classList.remove("show"); doUndo(); };
+  }
+  toastTimer = setTimeout(()=>el.classList.remove("show"), opts.stay ? 9000 : 4200);
+}
+
+function busy(btn, on, label){
+  if(on){ btn.dataset.old = btn.textContent; btn.disabled = true;
+          btn.innerHTML = '<span class="spin"></span> ' + (label||"处理中"); }
+  else { btn.disabled = false; btn.textContent = btn.dataset.old || btn.textContent; }
+}
+
+function syncButtons(){
+  $("btnExtract").disabled = !S.dir;
+  $("btnPreview").disabled = !S.dir || !$("kw").value.trim();
+}
+
+/* ---------- 1 文件夹 ---------- */
+$("btnPick").onclick = async () => {
+  const btn = $("btnPick"); busy(btn, true, "等待选择");
+  try{
+    const d = await api("/api/pick-folder", {});
+    if(d.cancelled){ busy(btn,false); return; }
+    $("pathInput").value = d.path;
+    await loadDir(d.path);
+  }catch(e){ toast(e.message,{error:true}); }
+  finally{ busy(btn,false); }
+};
+
+$("btnLoad").onclick = () => {
+  const p = $("pathInput").value.trim();
+  if(p) loadDir(p); else toast("先填路径", {error:true});
+};
+
+$("pathInput").addEventListener("keydown", e => { if(e.key === "Enter") $("btnLoad").click(); });
+
+async function loadDir(path){
+  try{
+    const d = await api("/api/list", {path, recursive:$("recursive").checked});
+    S.dir = d.dir; S.files = d.files; S.rows = [];
+    $("dirHint").textContent = "";
+    $("fileMeta").textContent = `${d.count} 个文件 · ${d.dir}`;
+    $("resultCard").style.display = "none";
+    $("chips").innerHTML = ""; $("bodyText").style.display = "none";
+    $("extractStat").textContent = "";
+    syncButtons();
+  }catch(e){ toast(e.message, {error:true}); }
+}
+
+/* ---------- 2 关键词 ---------- */
+$("btnExtract").onclick = doExtract;
+async function doExtract(){
+  const btn = $("btnExtract"); busy(btn, true, "读取中");
+  try{
+    const d = await api("/api/extract", {path:S.dir, limit:2500});
+    const box = $("chips"); box.innerHTML = "";
+    d.candidates.forEach((c,i) => {
+      const el = document.createElement("span");
+      el.className = "chip" + (i===0 ? " on" : "");
+      el.innerHTML = `${c.kw}<span class="why">${c.why||""}</span>`;
+      el.onclick = () => {
+        [...box.children].forEach(x=>x.classList.remove("on"));
+        el.classList.add("on");
+        $("kw").value = c.kw;
+        syncButtons();
+      };
+      box.appendChild(el);
+    });
+    if(d.candidates.length && !$("kw").value.trim()){
+      $("kw").value = d.candidates[0].kw;
+    }
+    const src = d.sources[0];
+    if(src && src.text){
+      $("bodyText").style.display = "block";
+      $("bodyText").textContent = `【${src.name}】\n` + src.text.slice(0, 1200);
+    }
+    $("extractStat").textContent = d.candidates.length
+      ? `${d.candidates.length} 个候选 · 点一个即用`
+      : "没抽出可用文字，请手动输入关键词";
+    syncButtons();
+  }catch(e){ toast(e.message, {error:true}); }
+  finally{ busy(btn,false); }
+}
+
+$("kw").addEventListener("input", syncButtons);
+
+/* ---------- 3 预览 ---------- */
+function payload(){
+  return {
+    path: S.dir,
+    kw: $("kw").value.trim(),
+    template: $("tpl").value,
+    sort: $("sort").value,
+    recursive: $("recursive").checked
+  };
+}
+
+$("btnPreview").onclick = doPreview;
+async function doPreview(){
+  const btn = $("btnPreview"); busy(btn, true, "预览中");
+  try{
+    const d = await api("/api/preview", payload());
+    S.rows = d.rows;
+    const tb = $("tbody"); tb.innerHTML = "";
+    d.rows.forEach(r => {
+      const tr = document.createElement("tr");
+      tr.className = r.changed ? "changed" : "same";
+      tr.innerHTML = `<td class="from">${esc(r.from)}</td>
+                      <td class="arrow">→</td>
+                      <td class="to">${esc(r.to)}</td>`;
+      tb.appendChild(tr);
+    });
+    $("resultCard").style.display = "block";
+    $("previewStat").textContent = `${d.count} 个文件，将改动 ${d.changed} 个`;
+    $("applyStat").textContent = "";
+    $("btnApply").disabled = d.changed === 0;
+  }catch(e){ toast(e.message, {error:true}); }
+  finally{ busy(btn,false); }
+}
+
+/* ---------- 4 执行 ---------- */
+$("btnApply").onclick = async () => {
+  const changed = S.rows.filter(r=>r.changed).length;
+  if(!changed) return;
+  if(!confirm(`将重命名 ${changed} 个文件。\n\n执行后可以撤销，确定继续？`)) return;
+  const btn = $("btnApply"); busy(btn, true, "改名中");
+  try{
+    const d = await api("/api/apply", payload());
+    if(d.renamed === 0){
+      toast("文件名已符合规则，无需改动");
+    }else{
+      $("applyStat").textContent = `已改名 ${d.renamed} 个`;
+      $("btnUndo").style.display = "inline-block";
+      $("btnUndo").dataset.log = d.log;
+      toast(`已改名 ${d.renamed} 个文件`, {undo:true, stay:true});
+    }
+    await loadDir(S.dir);
+    $("resultCard").style.display = "block";
+    $("tbody").innerHTML = "";
+    $("previewStat").textContent = "";
+  }catch(e){ toast(e.message, {error:true}); }
+  finally{ busy(btn,false); }
+};
+
+$("btnUndo").onclick = doUndo;
+async function doUndo(){
+  const log = $("btnUndo").dataset.log;
+  try{
+    const d = await api("/api/undo", log ? {log} : {});
+    toast(`已还原 ${d.restored} 个文件` + (d.skipped ? `，跳过 ${d.skipped} 个` : ""));
+    $("btnUndo").style.display = "none";
+    if(S.dir) await loadDir(S.dir);
+  }catch(e){ toast(e.message, {error:true}); }
+}
+
+/* ---------- misc ---------- */
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+$("recursive").onchange = () => { if(S.dir) loadDir(S.dir); };
+syncButtons();
+
+/* ---------- 深链：?path=...&kw=... 可直接打开某个文件夹并预填规则 ---------- */
+(async () => {
+  const qs = new URLSearchParams(location.search);
+  const p = qs.get("path");
+  if(!p) return;
+  $("pathInput").value = p;
+  await loadDir(p);
+  await doExtract();
+  const k = qs.get("kw");
+  if(k){
+    $("kw").value = k;
+    [...$("chips").children].forEach(x => x.classList.remove("on"));
+    syncButtons();
+    await doPreview();
+  }
+})();
+</script>
+</body>
+</html>

@@ -115,13 +115,24 @@ def cmd_logs(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    from .server import serve
+    serve(port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
+def cmd_mcp(args) -> int:
+    from .mcp_server import run_stdio
+    return run_stdio()
+
+
 # ------------------------------------------------------------------ 参数
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="rnbatch",
         description="批量重命名：从一份文件里取关键词，让一堆文件名字一致。",
     )
-    ap.add_argument("-V", "--version", action="version", version="rnbatch 0.1.0")
+    ap.add_argument("-V", "--version", action="version", version="rnbatch 0.2.0")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def common(p):
@@ -155,6 +166,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_lg = sub.add_parser("logs", help="列出撤销日志")
     p_lg.set_defaults(func=cmd_logs)
+
+    p_sv = sub.add_parser("serve", help="启动本地 Web 应用（文件不出本机）")
+    p_sv.add_argument("--port", type=int, default=8765)
+    p_sv.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    p_sv.set_defaults(func=cmd_serve)
+
+    p_mc = sub.add_parser("mcp", help="以 MCP server 运行（stdio），供任意 agent 调用")
+    p_mc.set_defaults(func=cmd_mcp)
+
     return ap
 
 

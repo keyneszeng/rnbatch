@@ -16,6 +16,16 @@ description: >-
 
 前置条件：`rnbatch` 已在 PATH 里（`pip install -e ".[all]"` 后即得）。
 
+## 优先用 MCP 工具，其次用 CLI
+
+如果会话里已经挂了 `rnbatch` 的 MCP server（工具名 `list_files` / `extract_text` /
+`preview_rename` / `apply_rename` / `undo_rename` / `recent_renames`），**直接调工具**，
+不用走命令行 —— 返回值是结构化 JSON，比解析 stdout 可靠。
+
+只有 MCP 不可用时，才用下面的 CLI 流程。
+
+配置方式见仓库 `docs/AGENT.md`。
+
 ## 标准流程
 
 ### 1. 摸清文件夹
