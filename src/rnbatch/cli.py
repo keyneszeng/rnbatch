@@ -4,10 +4,13 @@ from __future__ import annotations
 import argparse
 import sys
 import unicodedata
+from pathlib import Path
 
-from .engine import (apply_plan, collect, list_undo_logs, plan, sanitize,
-                     undo)
-from .extract import extract_text, type_of
+from . import keywords as kwmod
+from .engine import (MAX_NAME_BYTES, ConflictError, apply_plan,
+                     check_conflicts, collect, find_symlinks, list_undo_logs,
+                     plan, relative_label, sanitize, stale_temp_files, undo)
+from .extract import rich_texts, type_of
 
 
 # ------------------------------------------------------------------ 显示宽度
@@ -38,48 +41,153 @@ def cmd_extract(args) -> int:
     if not files:
         print("没有可解析的文件", file=sys.stderr)
         return 2
-    for p in files[: args.max_files]:
-        body = extract_text(p, args.limit)
+
+    # 传目录时按「正文最可能有料」挑，而不是按文件名排头几个 ——
+    # 否则会先挑到 café.txt 这种只有三个字的文件，把项目说明挤掉。
+    # rich_texts 会跳过解析失败 / 没有文字层的，避免名额被废文件占掉。
+    picked = rich_texts(files, want=args.max_files, limit=args.limit)
+    if not picked:
+        print("这几个文件都没抽出可用正文（可能都是扫描件或已损坏）。", file=sys.stderr)
+        return 2
+
+    pool: list[dict] = []
+    for p, body in picked:
+        cands = kwmod.suggest(body)
         print("=" * 70)
         print(f"文件: {p.name}")
         print(f"类型: {type_of(p.suffix)}   大小: {p.stat().st_size / 1024:.1f} KB")
         print("-" * 70)
-        print(body if body else "（无可用文本）")
+        print(body)
         print()
+        for c in cands:
+            c = dict(c)
+            c["from"] = p.name
+            pool.append(c)
+
+    best: dict[str, dict] = {}
+    for c in pool:
+        cur = best.get(c["kw"])
+        if cur is None or c["score"] > cur["score"]:
+            best[c["kw"]] = c
+    merged = sorted(best.values(), key=lambda c: -c["score"])[:10]
+
+    if merged:
+        print("=" * 70)
+        print("候选关键词（挑一个给 --kw 用）")
+        print("-" * 70)
+        for i, c in enumerate(merged, 1):
+            print(f"  {i}. {dpad(c['kw'], 24)} {c['score']:>5.1f}  {c['why']}")
+        print()
+        print(f"下一步： rnbatch preview <目录> --kw \"{merged[0]['kw']}\"")
+    else:
+        print("没有提出候选关键词，请手动指定 --kw。", file=sys.stderr)
     return 0
 
 
+def _resolve_files(args):
+    """收集文件，并对「路径根本不存在」给出明确错误，而不是含糊的"没有匹配到文件"。"""
+    missing = [p for p in args.paths if not Path(p).expanduser().exists()]
+    if len(missing) == len(args.paths):
+        raise FileNotFoundError(f"路径不存在：{missing[0]}")
+    for m in missing:
+        print(f"⚠️  跳过（不存在）: {m}", file=sys.stderr)
+    return collect(args.paths, args.recursive, args.only)
+
+
 def cmd_preview(args) -> int:
-    files = collect(args.paths, args.recursive, args.only)
-    if not files:
-        print("没有匹配到文件。")
+    try:
+        files = _resolve_files(args)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
         return 2
-    pairs = plan(files, args.kw, args.template, args.start, args.pad, args.sort)
+    if not files:
+        print("目录里没有可改名的文件（隐藏文件已跳过）。")
+        return 2
+    warns: list = []
+    pairs = plan(files, args.kw, args.template, args.start, args.pad, args.sort,
+                 warnings=warns)
     changed = sum(1 for a, b in pairs if a.name != b.name)
-    w = min(46, max((dwidth(a.name) for a, _ in pairs), default=10))
+    conflicts = check_conflicts(pairs)
+    cset = {a for a, _ in conflicts}
+    links = find_symlinks(args.paths, args.recursive)
+
+    # 递归时用相对路径，否则两个 a.txt 在表里长得一模一样
+    def label(p):
+        return relative_label(p, args.paths) if args.recursive else p.name
+
+    w = min(46, max((dwidth(label(a)) for a, _ in pairs), default=10))
     print(f"关键词: 「{args.kw}」   模板: {args.template}   "
           f"共 {len(pairs)} 个文件，将改动 {changed} 个\n")
+    if links:
+        print(f"ⓘ 跳过 {len(links)} 个符号链接（改名会让链接断掉）："
+              f"{links[0].name}" + ("…" if len(links) > 1 else ""))
+        print()
     print(f"  {dpad('原文件名', w)}  →  新文件名")
     print("-" * (w + 6 + 46))
     for a, b in pairs:
-        flag = " " if a.name == b.name else "*"
-        print(f"{flag} {dpad(trunc(a.name, w), w)}  →  {b.name}")
+        if a.name == b.name:
+            flag = " "
+        elif a in cset:
+            flag = "!"
+        else:
+            flag = "*"
+        print(f"{flag} {dpad(trunc(label(a), w), w)}  →  {label(b)}")
     print()
+
+    if warns:
+        print(f"⚠️  {len(warns)} 个名字超过 {MAX_NAME_BYTES} 字节上限，已自动截断"
+              f"（首个：{warns[0]['file']}）")
+        print()
+
+    if conflicts:
+        print(f"⚠️  {len(conflicts)} 个目标名已被目录里的其他文件占用，apply 会被拒绝：")
+        for a, b in conflicts[:5]:
+            print(f"     {a.name}  →  {b.name}  （已存在）")
+        if len(conflicts) > 5:
+            print(f"     …另有 {len(conflicts) - 5} 个")
+        print("   处理办法：换模板、加 --start，或先把占位文件挪走。")
+        return 0
+
     if changed:
         print("确认无误后，把 preview 换成 apply 执行（会写撤销日志）。")
     return 0
 
 
 def cmd_apply(args) -> int:
-    files = collect(args.paths, args.recursive, args.only)
-    if not files:
-        print("没有匹配到文件。")
+    try:
+        files = _resolve_files(args)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
         return 2
+    if not files:
+        print("目录里没有可改名的文件（隐藏文件已跳过）。")
+        return 2
+
+    stale = set()
+    for f in files:
+        stale.update(stale_temp_files(f.parent))
+    if stale:
+        print(f"⚠️  目录里有 {len(stale)} 个上次改名残留的临时文件（.rnbatch.tmp.*），"
+              f"已跳过。确认后可手动还原或删除。", file=sys.stderr)
+
     pairs = plan(files, args.kw, args.template, args.start, args.pad, args.sort)
     try:
         log = apply_plan(pairs, args.kw, args.template)
+    except ConflictError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        print("   没有改动任何文件。先跑 preview 看哪几行标了 !。", file=sys.stderr)
+        return 1
     except Exception as e:
-        print(f"❌ 改名中断：{e}", file=sys.stderr)
+        msg = str(e)
+        if "too long" in msg.lower() or "ENAMETOOLONG" in msg:
+            print("❌ 文件名过长：源文件名本身已经贴着系统上限，改名时连临时名都放不下。",
+                  file=sys.stderr)
+            print("   先把过长的源文件改短，再重跑。没有文件被改动。", file=sys.stderr)
+        elif "EACCES" in msg or "Permission denied" in msg:
+            print("❌ 没有写权限：这个目录或文件不允许改名。", file=sys.stderr)
+            print("   检查目录权限，或换到有权限的位置。", file=sys.stderr)
+        else:
+            print(f"❌ 改名中断：{e}", file=sys.stderr)
         print("已尽力回滚未完成的改动。", file=sys.stderr)
         return 1
     if log is None:
@@ -95,7 +203,7 @@ def cmd_apply(args) -> int:
 def cmd_undo(args) -> int:
     try:
         ok, skipped = undo(args.log)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         print(str(e), file=sys.stderr)
         return 2
     msg = f"↩️  已还原 {ok} 个文件"
@@ -132,7 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="rnbatch",
         description="批量重命名：从一份文件里取关键词，让一堆文件名字一致。",
     )
-    ap.add_argument("-V", "--version", action="version", version="rnbatch 0.2.0")
+    ap.add_argument("-V", "--version", action="version", version="rnbatch 0.2.1")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def common(p):

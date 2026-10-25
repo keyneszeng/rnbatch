@@ -82,6 +82,9 @@
   td{padding:7px 10px;border-bottom:1px solid var(--line-2);vertical-align:top}
   tr:last-child td{border-bottom:none}
   tr.changed td:first-child{box-shadow:inset 2px 0 0 var(--accent)}
+  tr.conflict td:first-child{box-shadow:inset 2px 0 0 #d14343}
+  tr.conflict td.to{color:#b42a2a}
+  tr.conflict td.to::after{content:"  ⚠ 已被占用";font-size:11px;font-family:-apple-system,sans-serif}
   td.from{color:var(--ink-2);word-break:break-all}
   td.to{color:var(--ink);font-weight:500;word-break:break-all}
   td.arrow{color:var(--ink-3);width:24px;text-align:center;padding-left:0;padding-right:0}
@@ -115,7 +118,7 @@
 <div class="wrap">
   <header>
     <h1>rnbatch</h1>
-    <span class="tag">v0.2 · local</span>
+    <span class="tag">v__VERSION__ · local</span>
   </header>
   <p class="lede">从一份文件里读出关键词，让整个文件夹的名字变一致。所有处理都在本机完成。</p>
 
@@ -149,11 +152,11 @@
     <div class="row">
       <input type="text" id="kw" placeholder="关键词（项目名 / 人名 / 公司简称）" style="max-width:280px">
       <select id="tpl">
-        <option value="{kw}-{n:02}">{kw}-{n:02}　→　星海中心-01.jpg</option>
-        <option value="{kw}-{n:02}-{type}">{kw}-{n:02}-{type}　→　星海中心-01-照片.jpg</option>
-        <option value="{kw}-{orig}">{kw}-{orig}　→　星海中心-方案汇报.pptx</option>
-        <option value="{kw}-{date}-{n:02}">{kw}-{date}-{n:02}　→　星海中心-20261018-01.jpg</option>
-        <option value="{type}-{kw}-{n:02}">{type}-{kw}-{n:02}　→　照片-星海中心-01.jpg</option>
+        <option value="{kw}-{n:02}">{kw}-{n:02}　→　关键词-01.jpg</option>
+        <option value="{kw}-{n:02}-{type}">{kw}-{n:02}-{type}　→　关键词-01-照片.jpg</option>
+        <option value="{kw}-{orig}">{kw}-{orig}　→　关键词-方案汇报.pptx</option>
+        <option value="{kw}-{date}-{n:02}">{kw}-{date}-{n:02}　→　关键词-20261018-01.jpg</option>
+        <option value="{type}-{kw}-{n:02}">{type}-{kw}-{n:02}　→　照片-关键词-01.jpg</option>
       </select>
       <select id="sort">
         <option value="name">按文件名</option>
@@ -272,7 +275,7 @@ async function doExtract(){
     d.candidates.forEach((c,i) => {
       const el = document.createElement("span");
       el.className = "chip" + (i===0 ? " on" : "");
-      el.innerHTML = `${c.kw}<span class="why">${c.why||""}</span>`;
+      el.innerHTML = `${esc(c.kw)}<span class="why">${esc(c.why||"")}</span>`;
       el.onclick = () => {
         [...box.children].forEach(x=>x.classList.remove("on"));
         el.classList.add("on");
@@ -319,16 +322,29 @@ async function doPreview(){
     const tb = $("tbody"); tb.innerHTML = "";
     d.rows.forEach(r => {
       const tr = document.createElement("tr");
-      tr.className = r.changed ? "changed" : "same";
-      tr.innerHTML = `<td class="from">${esc(r.from)}</td>
+      tr.className = r.conflict ? "conflict" : (r.changed ? "changed" : "same");
+      tr.innerHTML = `<td class="from">${esc(r.from_label || r.from)}</td>
                       <td class="arrow">→</td>
-                      <td class="to">${esc(r.to)}</td>`;
+                      <td class="to">${esc(r.to_label || r.to)}</td>`;
       tb.appendChild(tr);
     });
     $("resultCard").style.display = "block";
     $("previewStat").textContent = `${d.count} 个文件，将改动 ${d.changed} 个`;
-    $("applyStat").textContent = "";
-    $("btnApply").disabled = d.changed === 0;
+    if(d.conflicts){
+      $("applyStat").textContent = `⚠ ${d.conflicts} 个目标名已被占用，不能执行`;
+      $("btnApply").disabled = true;
+      toast(`${d.conflicts} 个目标名已被占用（${(d.conflict_names||[]).join("、")}）。换个模板或先把占位文件挪走。`, {error:true, stay:true});
+    }else{
+      $("applyStat").textContent = "";
+      $("btnApply").disabled = d.changed === 0;
+      if(d.stale_temp && d.stale_temp.length){
+        toast(`目录里有 ${d.stale_temp.length} 个上次改名残留的临时文件（.rnbatch.tmp.*），已跳过`, {stay:true});
+      }else if(d.warnings && d.warnings.length){
+        toast(`${d.warnings.length} 个名字超过长度上限，已自动截断`, {stay:true});
+      }else if(d.skipped_symlinks){
+        toast(`跳过 ${d.skipped_symlinks} 个符号链接（改名会让链接断掉）`, {stay:true});
+      }
+    }
   }catch(e){ toast(e.message, {error:true}); }
   finally{ busy(btn,false); }
 }

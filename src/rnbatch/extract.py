@@ -82,6 +82,11 @@ def _from_xlsx(p: Path, max_rows: int = 80) -> str:
 def _from_pdf(p: Path, max_pages: int = 4) -> str:
     from pypdf import PdfReader
     reader = PdfReader(str(p))
+    if getattr(reader, "is_encrypted", False):
+        try:
+            reader.decrypt("")           # 有些 PDF 只是空密码加密
+        except Exception:
+            return "（PDF 已加密，无法读取正文）"
     parts = []
     for i, page in enumerate(reader.pages):
         if i >= max_pages:
@@ -91,7 +96,10 @@ def _from_pdf(p: Path, max_pages: int = 4) -> str:
             parts.append(page.extract_text() or "")
         except Exception:
             parts.append("")
-    return "\n".join(parts)
+    text = "\n".join(parts).strip()
+    if not text:
+        return "（PDF 没有文字层，可能是扫描件；需要 OCR 才能读出内容）"
+    return text
 
 
 def _from_plain(p: Path) -> str:
@@ -209,9 +217,56 @@ def extract_text(p: Path, limit: int = 4000) -> str:
 # 抽正文的优先级：文档最先，照片最后（OCR 最慢，且命中率低于正文）
 SOURCE_PRIORITY = {"文档": 0, "PDF": 1, "演示": 2, "表格": 3}
 
+# 同属「文档」时，真正的办公文档比裸文本更可能是正式材料；
+# .txt / .md 什么内容都可能是，排在后面。
+EXT_PRIORITY = {
+    ".docx": 0, ".doc": 1, ".pages": 2, ".rtf": 3,
+    ".md": 4, ".txt": 5, ".csv": 6, ".json": 7, ".xml": 8,
+}
+
 
 def preferred_sources(files, n: int = 3):
-    """从一堆文件里挑最可能藏着关键词的几个，避免一上来就 OCR 一堆照片。"""
+    """从一堆文件里挑最可能藏着关键词的几个。
+
+    三条排序依据，缺一不可：
+    1. 类型 —— 文档 > PDF > 演示 > 表格 > 照片（OCR 慢且命中率低）
+    2. 扩展名 —— 正式文档 > 裸文本（见 EXT_PRIORITY）
+    3. 体积降序 —— 正文越长，关键词信号越强
+
+    第 3 条是实测补上的：早先只按文件名排序，结果「项目说明.txt」（正文四行）
+    被「café.txt」（正文三个字）挤出了候选集，于是候选词里全是
+    「报价」「补充材料」这类噪音，真正的项目名反而没被提出来。
+    """
     def rank(f):
-        return (SOURCE_PRIORITY.get(type_of(f.suffix), 5), str(f).lower())
+        try:
+            size = f.stat().st_size
+        except OSError:
+            size = 0
+        return (SOURCE_PRIORITY.get(type_of(f.suffix), 5),
+                EXT_PRIORITY.get(f.suffix.lower(), 9),
+                -min(size, 500_000),
+                str(f).lower())
     return sorted(files, key=rank)[:n]
+
+
+def rich_texts(files, want: int = 3, limit: int = 3000, pool: int = 12):
+    """按优先级逐个抽正文，跳过「解析失败 / 没有文字层 / 空文件」，凑够 want 份为止。
+
+    为什么不能只取前 want 个：损坏的 docx、没有文字层的扫描 PDF、只有一行字的
+    空壳文件都排在前面，它们占掉名额后整次抽取就颗粒无收。多试几个才有兜底。
+    """
+    out = []
+    for f in preferred_sources(files, max(pool, want)):
+        try:
+            text = extract_text(f, limit)
+        except Exception:
+            continue
+        if not text.strip():
+            continue
+        # 抽取层自己的占位提示（（解析失败…）/（PDF 没有文字层…））不算正文
+        if text.lstrip().startswith("（"):
+            continue
+        out.append((f, text))
+        if len(out) >= want:
+            break
+    return out

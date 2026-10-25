@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rnbatch"
-version = "0.2.0"
+version = "0.2.1"
 description = "Batch rename mixed files to one consistent name, using a keyword read from a source document."
 readme = "README.md"
 requires-python = ">=3.9"

@@ -43,5 +43,64 @@ class TestSuggest(unittest.TestCase):
         self.assertEqual(scores, sorted(scores, reverse=True))
 
 
+class TestNameQuality(unittest.TestCase):
+    """回归：真实语料里挖出来的几类噪音，不能再回来。
+
+    每一条都对应一次实测踩坑，别随手删。
+    """
+
+    def _top(self, text):
+        got = suggest(text, 3)
+        return got[0]["kw"] if got else ""
+
+    def test_category_suffix_stripped(self):
+        """「星海计划项目」→「星海计划」，项目/工程只是类别词。"""
+        self.assertEqual(self._top("星海计划项目\n甲方：深圳星海科技有限公司\n"
+                                   "本项目建设内容如下\n星海计划预计 2026 年上线。"),
+                         "星海计划")
+
+    def test_company_full_name_kept(self):
+        """公司全称才是实体名，不能砍成「深圳星海科技」。"""
+        got = [c["kw"] for c in suggest(
+            "甲方：深圳星海科技有限公司\n乙方：中建三局集团有限公司")]
+        self.assertIn("深圳星海科技有限公司", got)
+        self.assertIn("中建三局集团有限公司", got)
+
+    def test_company_with_gongcheng_not_cut(self):
+        """公司名里含「工程」时不能当类别词切掉。"""
+        got = [c["kw"] for c in suggest(
+            "报价单位：广东启明照明工程有限公司\n项目名称：滨海新区智慧路灯改造工程")]
+        self.assertIn("广东启明照明工程有限公司", got)
+        self.assertIn("滨海新区智慧路灯改造", got)
+
+    def test_long_title_cuts_at_first_category_word(self):
+        """长标题在第一个类别词处切：「关于星海计划项目一期建设工程…」→「星海计划」。"""
+        self.assertEqual(self._top("关于星海计划项目一期建设工程竣工验收情况的汇报材料"),
+                         "星海计划")
+
+    def test_half_sentence_fragments_filtered(self):
+        """「年上线」「星海计划预计」这类半句话不能进候选。"""
+        got = [c["kw"] for c in suggest(
+            "星海计划项目\n星海计划预计 2026 年上线。\n本项目建设内容如下")]
+        self.assertNotIn("年上线", got)
+        self.assertNotIn("星海计划预计", got)
+
+    def test_suffix_only_org_rejected(self):
+        """「集团有限公司」这种纯后缀片段不是名字。"""
+        got = [c["kw"] for c in suggest("乙方：中建三局集团有限公司")]
+        self.assertNotIn("集团有限公司", got)
+
+    def test_english_names(self):
+        got = [c["kw"] for c in suggest(
+            "Project StarOcean\nClient: Acme Corp\nStatus: in progress")]
+        self.assertIn("Acme Corp", got)
+        self.assertIn("Project StarOcean", got)
+        self.assertNotIn("Status", got)
+
+    def test_english_does_not_span_newlines(self):
+        got = [c["kw"] for c in suggest("Acme Corp\nStatus: in progress")]
+        self.assertFalse(any("\n" in g for g in got))
+
+
 if __name__ == "__main__":
     unittest.main()

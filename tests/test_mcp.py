@@ -99,6 +99,88 @@ class TestTools(unittest.TestCase):
                                "arguments": {"path": "/definitely/not/here"}}})
         self.assertTrue(r["result"]["isError"])
 
+    def test_preview_flags_conflict(self):
+        (self.dir / "星海中心-01.jpg").write_text("occupied", encoding="utf-8")
+        d = self._call("preview_rename",
+                       {"path": str(self.dir / "IMG_1.jpg"),
+                        "keyword": "星海中心", "template": "{kw}-{n:02}"})
+        self.assertEqual(d["conflicts"], 1)
+        self.assertIn("warning", d)
+
+
+class TestRobustness(unittest.TestCase):
+    """畸形输入不能把 server 搞崩 —— 崩一次，整个连接就废了。"""
+
+    def test_non_object_message(self):
+        for bad in ([], "string", 123, None):
+            r = handle(bad)
+            self.assertEqual(r["error"]["code"], -32600)
+
+    def test_null_params(self):
+        r = handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": None})
+        self.assertIn("serverInfo", r["result"])
+
+    def test_non_dict_params(self):
+        r = handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+                    "params": "nope"})
+        self.assertIn("tools", r["result"])
+
+    def test_missing_method(self):
+        r = handle({"jsonrpc": "2.0", "id": 3})
+        self.assertEqual(r["error"]["code"], -32600)
+
+
+class TestToolArgs(unittest.TestCase):
+    """agent 传参不规范是常态，工具层要自己兜住。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        (self.dir / "a.txt").write_text("星海中心项目 一期", encoding="utf-8")
+        (self.dir / "b.txt").write_text("x", encoding="utf-8")
+        self.undo_bak = engine.UNDO_DIR
+        engine.UNDO_DIR = self.dir / "_undo"
+
+    def tearDown(self):
+        engine.UNDO_DIR = self.undo_bak
+        self.tmp.cleanup()
+
+    def _call(self, name, args):
+        return handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": name, "arguments": args}})
+
+    def test_missing_path_is_error_not_crash(self):
+        r = self._call("list_files", {})
+        self.assertTrue(r["result"]["isError"])
+        self.assertIn("path", r["result"]["content"][0]["text"])
+
+    def test_extract_blocks_path_traversal(self):
+        r = self._call("extract_text",
+                       {"path": str(self.dir), "files": ["../../../../etc/hosts"]})
+        self.assertFalse(r["result"]["isError"])
+        data = json.loads(r["result"]["content"][0]["text"])
+        names = [s["name"] for s in data["sources"]]
+        self.assertNotIn("hosts", names)
+
+    def test_preview_bad_start_falls_back(self):
+        r = self._call("preview_rename",
+                       {"path": str(self.dir), "keyword": "星海", "start": "abc"})
+        data = json.loads(r["result"]["content"][0]["text"])
+        self.assertEqual(data["rows"][0]["to"], "星海-01.txt")
+
+    def test_preview_negative_pad_clamped(self):
+        r = self._call("preview_rename",
+                       {"path": str(self.dir), "keyword": "星海", "pad": -3})
+        data = json.loads(r["result"]["content"][0]["text"])
+        self.assertEqual(data["rows"][0]["to"], "星海-01.txt")
+
+    def test_undo_missing_log_is_error(self):
+        r = self._call("undo_rename", {"log": "nope.json"})
+        data = json.loads(r["result"]["content"][0]["text"])
+        self.assertEqual(data["restored"], 0)
+        self.assertIn("error", data)
+
 
 if __name__ == "__main__":
     unittest.main()

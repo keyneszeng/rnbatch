@@ -22,24 +22,95 @@ UNDO_DIR = STATE_DIR / "undo"
 
 ILLEGAL = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
 
+# 单个文件名的字节上限。
+# 理论上 APFS / ext4 是 255 字节，但备份工具、同步盘、加密层都会在这个名字上
+# 再拼后缀，实测 240 字节就开始报 ENAMETOOLONG。取 200 留足余量，
+# 200 字节 ≈ 66 个汉字，正常命名远远用不到。
+MAX_NAME_BYTES = 200
+
+
+class ConflictError(RuntimeError):
+    """目标文件名已被目录里的其他文件占用。"""
+
+    def __init__(self, conflicts):
+        self.conflicts = conflicts
+        detail = "、".join(b.name for _a, b in conflicts[:5])
+        more = f" 等 {len(conflicts)} 个" if len(conflicts) > 5 else ""
+        super().__init__(f"目标名已被占用：{detail}{more}")
+
 
 # ------------------------------------------------------------------ 收集
-def collect(paths, recursive: bool = False, only=None) -> list[Path]:
-    """展开文件夹 / 文件列表，去掉隐藏文件。"""
+def _norm_only(only) -> set[str] | None:
+    """only 既接受 ['pdf','jpg'] 也接受 'pdf,jpg'，避免调用方传错就静默失效。
+
+    传了完全无法解释的类型（数字、字典…）时当作「不过滤」而不是抛异常 ——
+    过滤条件写错不该让整次改名失败。
+    """
+    if not only:
+        return None
+    if isinstance(only, str):
+        items = only.split(",")
+    elif isinstance(only, (list, tuple, set, frozenset)):
+        items = list(only)
+    else:
+        return None
+    out = {"." + str(e).strip().lower().lstrip(".") for e in items if str(e).strip()}
+    return out or None
+
+
+def collect(paths, recursive: bool = False, only=None,
+            include_symlinks: bool = False) -> list[Path]:
+    """展开文件夹 / 文件列表，去掉隐藏文件。
+
+    默认跳过符号链接：改名链接本身几乎从不是想要的结果，而且一旦改名，
+    链接指向的原文件也跟着改名，链接当场断掉（数据访问失败）。
+    """
     out: list[Path] = []
     for raw in paths:
         p = Path(raw).expanduser()
+        if p.is_symlink() and not include_symlinks:
+            continue
         if p.is_file():
             out.append(p)
         elif p.is_dir():
             it = p.rglob("*") if recursive else p.iterdir()
             for c in it:
-                if c.is_file() and not c.name.startswith("."):
-                    out.append(c)
-    if only:
-        wanted = {"." + str(e).lower().lstrip(".") for e in only}
+                if not c.is_file() or c.name.startswith("."):
+                    continue
+                if c.is_symlink() and not include_symlinks:
+                    continue
+                out.append(c)
+    wanted = _norm_only(only)
+    if wanted:
         out = [f for f in out if f.suffix.lower() in wanted]
     return sorted(set(out), key=lambda x: str(x))
+
+
+def find_symlinks(paths, recursive: bool = False) -> list[Path]:
+    """列出会被跳过的符号链接，用于提示用户。"""
+    out: list[Path] = []
+    for raw in paths:
+        p = Path(raw).expanduser()
+        if p.is_symlink():
+            out.append(p)
+        elif p.is_dir():
+            it = p.rglob("*") if recursive else p.iterdir()
+            for c in it:
+                if c.is_symlink():
+                    out.append(c)
+    return sorted(set(out), key=lambda x: str(x))
+
+
+def relative_label(p: Path, roots) -> str:
+    """递归改名时，光看文件名分不清 a.txt 到底在哪个子目录 —— 给个相对路径。"""
+    for r in roots:
+        r = Path(r).expanduser()
+        base = r if r.is_dir() else r.parent
+        try:
+            return str(p.relative_to(base))
+        except ValueError:
+            continue
+    return p.name
 
 
 # ------------------------------------------------------------------ 模板
@@ -53,7 +124,12 @@ def sanitize(s: str) -> str:
 
 def build_name(template: str, kw: str, idx: int, width: int,
                orig: str, date_str: str, ext: str, label: str) -> str:
-    """渲染模板。{n:03} 优先于 {n}（后者用自动宽度）。"""
+    """渲染模板。{n:03} 优先于 {n}（后者用自动宽度）。
+
+    {ext} 特殊处理：自动补上点号，并吞掉它前面的分隔符。
+    所以 {kw}-{n}.{ext} 和 {kw}-{n}-{ext} 都会得到 星海-01.jpg，
+    而不是 星海-01-jpg（丢失扩展名，文件双击打不开）。
+    """
     name = template
     for m in re.finditer(r"\{n:0?(\d+)d?\}", name):
         name = name.replace(m.group(0), str(idx).zfill(int(m.group(1))))
@@ -62,8 +138,36 @@ def build_name(template: str, kw: str, idx: int, width: int,
     name = name.replace("{orig}", orig)
     name = name.replace("{date}", date_str)
     name = name.replace("{type}", label)
-    name = name.replace("{ext}", ext.lstrip("."))
+
+    bare = ext.lstrip(".")
+    if "{ext}" in name:
+        if bare:
+            name = re.sub(r"[-_. ]?\{ext\}", "." + bare, name)
+        else:
+            name = re.sub(r"[-_. ]?\{ext\}", "", name)
+
     return sanitize(name)
+
+
+def ensure_ext(name: str, ext: str) -> str:
+    """兜底：无论模板怎么写，最终文件名必须带上原扩展名。"""
+    if not ext:
+        return name
+    if name.lower().endswith(ext.lower()):
+        return name
+    return name + ext
+
+
+def fit_length(name: str, ext: str = "") -> str:
+    """按 UTF-8 字节截断，防止 'File name too long'（整批改名失败）。"""
+    ext_b = len(ext.encode("utf-8"))
+    budget = MAX_NAME_BYTES - ext_b
+    if budget < 1:
+        budget = MAX_NAME_BYTES
+    while len(name.encode("utf-8")) > budget and name:
+        name = name[:-1]
+    name = name.rstrip(" .")
+    return name or "renamed"
 
 
 def date_of(p: Path) -> str:
@@ -87,14 +191,18 @@ def _sorted(files: list[Path], how: str) -> list[Path]:
 
 
 def plan(files, kw: str, template: str = "{kw}-{n}", start: int = 1,
-         pad: int = 0, sort: str = "name") -> list[tuple[Path, Path]]:
-    """生成 (原路径, 新路径) 列表。纯计算，不碰文件。"""
+         pad: int = 0, sort: str = "name", warnings: list | None = None
+         ) -> list[tuple[Path, Path]]:
+    """生成 (原路径, 新路径) 列表。纯计算，不碰文件。
+
+    传一个 list 给 warnings，会把「名字太长被截断」这类提醒塞进去，
+    免得用户莫名其妙发现文件名少了一截。
+    """
     kw = sanitize(kw)
     if not kw:
         raise ValueError("关键词为空，拒绝执行。")
     files = _sorted(list(files), sort)
     width = pad or max(2, len(str(len(files) + start - 1)))
-    has_ext_slot = "{ext}" in template
 
     taken: set[str] = set()
     pairs: list[tuple[Path, Path]] = []
@@ -105,11 +213,25 @@ def plan(files, kw: str, template: str = "{kw}-{n}", start: int = 1,
                           date_of(p), ext, type_of(ext))
         if not base:
             base = f"{kw}-{str(idx).zfill(width)}"
-        candidate = base if has_ext_slot else base + ext
+        name = ensure_ext(base, ext)
+
+        # 拆成 主名 + 扩展名，方便截断和去重时插在正确位置
+        root = name[: len(name) - len(ext)] if ext and name.lower().endswith(ext.lower()) else name
+        fitted = fit_length(root, ext)
+        if warnings is not None and fitted != root:
+            warnings.append({
+                "type": "truncated",
+                "file": p.name,
+                "kept_bytes": len(fitted.encode("utf-8")) + len(ext.encode("utf-8")),
+                "limit": MAX_NAME_BYTES,
+            })
+        root = fitted
+        candidate = root + ext
+
         if candidate.lower() in taken:          # 同批次内重名 → 追加 -2, -3…
             k = 2
             while True:
-                alt = f"{base}-{k}" + ("" if has_ext_slot else ext)
+                alt = fit_length(f"{root}-{k}", ext) + ext
                 if alt.lower() not in taken:
                     candidate = alt
                     break
@@ -119,12 +241,49 @@ def plan(files, kw: str, template: str = "{kw}-{n}", start: int = 1,
     return pairs
 
 
+def check_conflicts(pairs) -> list[tuple[Path, Path]]:
+    """找出「目标名已被目录里其他文件占用」的项。
+
+    占用者如果在本次待改名单里就不算冲突 —— 两阶段改名会先把它们挪走。
+    预览阶段就该提示，不能让用户点了执行才炸。
+    """
+    sources = set()
+    for a, _b in pairs:
+        try:
+            sources.add(a.resolve())
+        except OSError:
+            sources.add(a.absolute())
+    out: list[tuple[Path, Path]] = []
+    for a, b in pairs:
+        if a.name == b.name:
+            continue
+        try:
+            if not b.exists():
+                continue
+            try:
+                key = b.resolve()
+            except OSError:
+                key = b.absolute()
+            if key not in sources:
+                out.append((a, b))
+        except OSError:
+            continue
+    return out
+
+
 # ------------------------------------------------------------------ 执行
 def apply_plan(pairs, keyword: str = "", template: str = "") -> Path | None:
-    """执行改名，返回 undo 日志路径；无改动返回 None。失败自动回滚。"""
+    """执行改名，返回 undo 日志路径；无改动返回 None。
+
+    落盘前先查冲突，有冲突直接抛 ConflictError，一个文件都不碰。
+    """
     todo = [(a, b) for a, b in pairs if a.name != b.name]
     if not todo:
         return None
+
+    conflicts = check_conflicts(pairs)
+    if conflicts:
+        raise ConflictError(conflicts)
 
     UNDO_DIR.mkdir(parents=True, exist_ok=True)
     log_path = UNDO_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}.json"
@@ -132,7 +291,8 @@ def apply_plan(pairs, keyword: str = "", template: str = "") -> Path | None:
     staged: list[tuple[Path, Path, Path]] = []
     try:
         for a, b in todo:
-            tmp = a.with_name(f".rnbatch.tmp.{uuid.uuid4().hex[:10]}")
+            # 临时名里保留原文件名，万一进程被杀，人能认出这是什么
+            tmp = a.with_name(f".rnbatch.tmp.{a.stem[:40]}.{uuid.uuid4().hex[:8]}")
             os.rename(a, tmp)
             staged.append((tmp, a, b))
         for tmp, a, b in staged:
@@ -158,24 +318,56 @@ def apply_plan(pairs, keyword: str = "", template: str = "") -> Path | None:
     return log_path
 
 
+def stale_temp_files(directory: Path) -> list[Path]:
+    """找出上次改名中途被杀留下的临时文件。"""
+    try:
+        return sorted(directory.glob(".rnbatch.tmp.*"))
+    except OSError:
+        return []
+
+
 def list_undo_logs() -> list[Path]:
     if not UNDO_DIR.exists():
         return []
     return sorted(UNDO_DIR.glob("*.json"))
 
 
+def load_log(p: Path) -> dict | None:
+    """读一份撤销日志；损坏或格式不对返回 None，不让调用方崩在 json 解析上。"""
+    try:
+        data = json.loads(Path(p).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("records"), list):
+        return None
+    return data
+
+
 def undo(log: str | Path | None = None) -> tuple[int, int]:
-    """回滚。返回 (成功数, 跳过数)。log 为空则撤销最近一次。"""
+    """回滚。返回 (成功数, 跳过数)。log 为空则撤销最近一次可用的记录。"""
     logs = list_undo_logs()
     if not logs:
         raise FileNotFoundError("没有可撤销的记录。")
-    target = Path(log) if log else logs[-1]
-    if not target.is_absolute() and not target.exists():
-        target = UNDO_DIR / target
-    if not target.exists():
-        raise FileNotFoundError(f"找不到日志: {log}")
 
-    data = json.loads(target.read_text(encoding="utf-8"))
+    if log:
+        target = Path(log)
+        if not target.exists():
+            target = UNDO_DIR / str(log)
+        if not target.exists():
+            raise FileNotFoundError(f"找不到日志: {log}")
+        data = load_log(target)
+        if data is None:
+            raise ValueError(f"撤销日志已损坏，无法还原: {target.name}")
+    else:
+        target, data = None, None
+        for p in reversed(logs):                 # 跳过损坏的，找最近一份能用的
+            d = load_log(p)
+            if d is not None:
+                target, data = p, d
+                break
+        if data is None:
+            raise ValueError("最近的撤销日志都已损坏，无法还原。")
+
     ok = skipped = 0
     for rec in reversed(data["records"]):
         src, dst = Path(rec["to"]), Path(rec["from"])

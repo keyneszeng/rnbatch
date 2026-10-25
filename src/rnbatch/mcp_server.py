@@ -17,23 +17,43 @@ from pathlib import Path
 
 from . import __version__
 from . import keywords as kwmod
-from .engine import apply_plan, collect, list_undo_logs, plan, sanitize, undo
-from .extract import extract_text, preferred_sources, type_of
+from .engine import (ConflictError, apply_plan, check_conflicts, collect,
+                     list_undo_logs, load_log, plan, sanitize, undo)
+from .extract import extract_text, rich_texts, type_of
 
 PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"]
 LATEST = PROTOCOL_VERSIONS[0]
 
 
 # ------------------------------------------------------------------ 工具实现
-def _collect(path: str, recursive: bool = False, only=None):
-    p = Path(path).expanduser()
+def _arg_path(args: dict) -> Path:
+    """取 path 参数。缺了给一句人话，而不是 KeyError: 'path'。"""
+    raw = args.get("path")
+    if not raw or not isinstance(raw, str):
+        raise ValueError("缺少 path 参数（要处理的文件或文件夹路径）")
+    p = Path(raw).expanduser()
     if not p.exists():
-        raise FileNotFoundError(f"路径不存在：{path}")
+        raise FileNotFoundError(f"路径不存在：{raw}")
+    return p
+
+
+def _int(value, default: int, lo: int = 0, hi: int = 100_000) -> int:
+    """agent 传 "abc" / -3 这类值很常见，不该整次调用都失败。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
+def _collect(path: str, recursive: bool = False, only=None):
+    p = _arg_path({"path": path})
     return p, collect([p], recursive, only)
 
 
 def tool_list_files(args: dict) -> dict:
-    p, files = _collect(args["path"], bool(args.get("recursive")), args.get("only"))
+    p = _arg_path(args)
+    files = collect([p], bool(args.get("recursive")), args.get("only"))
     return {
         "directory": str(p),
         "count": len(files),
@@ -46,19 +66,30 @@ def tool_list_files(args: dict) -> dict:
 
 
 def tool_extract_text(args: dict) -> dict:
-    p, files = _collect(args["path"])
-    limit = int(args.get("limit") or 3000)
+    p = _arg_path(args)
+    limit = _int(args.get("limit"), 3000, lo=100, hi=200_000)
     names = args.get("files")
-    if names:
-        targets = [p / n if p.is_dir() else p for n in names]
-        targets = [t for t in targets if t.exists()]
+    if names and isinstance(names, list):
+        # 只允许抽 path 所在目录内的文件，防止 ../.. 读到系统文件
+        base = p if p.is_dir() else p.parent
+        pairs = []
+        for n in names:
+            t = (base / str(n)).resolve()
+            try:
+                t.relative_to(base.resolve())
+            except ValueError:
+                continue                     # 越界，直接丢掉
+            if t.is_file():
+                pairs.append((t, extract_text(t, limit)))
     else:
-        targets = preferred_sources(files, int(args.get("max_files") or 2))
+        files = collect([p], False, None)
+        # 解析失败 / 无文字层的文件不该占名额，多试几个兜底
+        pairs = rich_texts(files, want=_int(args.get("max_files"), 2, lo=1, hi=20),
+                           limit=limit)
 
     sources = []
     pool = []
-    for t in targets:
-        text = extract_text(t, limit)
+    for t, text in pairs:
         cands = kwmod.suggest(text)
         sources.append({"name": t.name, "type": type_of(t.suffix),
                         "text": text, "candidates": cands})
@@ -77,35 +108,52 @@ def tool_extract_text(args: dict) -> dict:
 
 
 def _plan(args: dict):
-    p, files = _collect(args["path"], bool(args.get("recursive")), args.get("only"))
+    p = _arg_path(args)
+    files = collect([p], bool(args.get("recursive")), args.get("only"))
     kw = sanitize(args.get("keyword") or args.get("kw") or "")
     if not kw:
         raise ValueError("keyword 不能为空")
+    warns: list = []
     pairs = plan(files, kw,
                  template=args.get("template") or "{kw}-{n}",
-                 start=int(args.get("start") or 1),
-                 pad=int(args.get("pad") or 0),
-                 sort=args.get("sort") or "name")
-    return pairs, kw
+                 start=_int(args.get("start"), 1, lo=0),
+                 pad=_int(args.get("pad"), 0, lo=0, hi=12),
+                 sort=args.get("sort") or "name",
+                 warnings=warns)
+    return pairs, kw, warns
 
 
 def tool_preview_rename(args: dict) -> dict:
-    pairs, kw = _plan(args)
+    pairs, kw, warns = _plan(args)
+    conflicts = check_conflicts(pairs)
+    cset = {str(a) for a, _ in conflicts}
     rows = [{"from": a.name, "to": b.name, "changed": a.name != b.name,
+             "conflict": str(a) in cset,
              "from_path": str(a), "to_path": str(b)} for a, b in pairs]
-    return {
+    out = {
         "keyword": kw,
         "template": args.get("template") or "{kw}-{n}",
         "count": len(rows),
         "changed": sum(1 for r in rows if r["changed"]),
+        "conflicts": len(conflicts),
+        "warnings": warns,
         "rows": rows,
-        "next_step": "把 rows 给用户确认，同意后再调 apply_rename。",
     }
+    if conflicts:
+        out["warning"] = (f"{len(conflicts)} 个目标名已被占用，apply_rename 会被拒绝："
+                          + "、".join(b.name for _a, b in conflicts[:5]))
+    else:
+        out["next_step"] = "把 rows 给用户确认，同意后再调 apply_rename。"
+    return out
 
 
 def tool_apply_rename(args: dict) -> dict:
-    pairs, kw = _plan(args)
-    log = apply_plan(pairs, kw, args.get("template") or "{kw}-{n}")
+    pairs, kw, _warns = _plan(args)
+    try:
+        log = apply_plan(pairs, kw, args.get("template") or "{kw}-{n}")
+    except ConflictError as e:
+        return {"renamed": 0, "error": str(e),
+                "hint": "先调 preview_rename 看哪些行标了 conflict，换模板或加 start 再试。"}
     if log is None:
         return {"renamed": 0, "message": "文件名已符合规则，无需改动"}
     n = sum(1 for a, b in pairs if a.name != b.name)
@@ -117,16 +165,18 @@ def tool_apply_rename(args: dict) -> dict:
 
 
 def tool_undo_rename(args: dict) -> dict:
-    ok, skipped = undo(args.get("log"))
+    try:
+        ok, skipped = undo(args.get("log"))
+    except (FileNotFoundError, ValueError) as e:
+        return {"restored": 0, "error": str(e)}
     return {"restored": ok, "skipped": skipped}
 
 
 def tool_recent_renames(_args: dict) -> dict:
     out = []
     for p in list_undo_logs()[-20:]:
-        try:
-            d = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
+        d = load_log(p)
+        if d is None:
             continue
         out.append({"log": p.name, "time": d.get("time"),
                     "keyword": d.get("keyword"), "count": len(d.get("records") or [])})
@@ -239,14 +289,23 @@ def _error(mid, code, message):
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 
 
-def handle(msg: dict) -> dict | None:
+def handle(msg) -> dict | None:
+    # 客户端可能发来数组（JSON-RPC 批量）、字符串、null —— 一律不能把进程搞崩
+    if not isinstance(msg, dict):
+        return _error(None, -32600, "请求必须是 JSON 对象")
+
     method = msg.get("method")
     mid = msg.get("id")
-    params = msg.get("params") or {}
+    params = msg.get("params")
+    if not isinstance(params, dict):
+        params = {}
 
     # 通知（无 id）不需要回应
     if mid is None and method:
         return None
+
+    if not method:
+        return _error(mid, -32600, "缺少 method 字段")
 
     if method == "initialize":
         asked = params.get("protocolVersion")
@@ -285,17 +344,33 @@ def handle(msg: dict) -> dict | None:
                 "isError": False,
             })
         except Exception as e:
+            # 参数类错误的消息本来就是人话，别再挂类型名让 agent 犯迷糊
+            if isinstance(e, (ValueError, FileNotFoundError, PermissionError)):
+                msg = str(e)
+            else:
+                msg = f"{type(e).__name__}: {e}"
             return _result(mid, {
-                "content": [{"type": "text",
-                             "text": f"{type(e).__name__}: {e}"}],
+                "content": [{"type": "text", "text": msg}],
                 "isError": True,
             })
 
     return _error(mid, -32601, f"未实现的方法：{method}")
 
 
+def _emit(obj) -> None:
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
 def run_stdio() -> int:
     """逐行读 stdin，逐行写 stdout。日志一律走 stderr，绝不污染协议流。"""
+    # 终端不是 UTF-8 时，中文 JSON 会直接抛 UnicodeEncodeError 把服务搞死
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -303,16 +378,34 @@ def run_stdio() -> int:
         try:
             msg = json.loads(line)
         except json.JSONDecodeError:
-            sys.stdout.write(json.dumps(
-                _error(None, -32700, "JSON 解析失败")) + "\n")
-            sys.stdout.flush()
+            _emit(_error(None, -32700, "JSON 解析失败"))
             continue
+
         try:
+            if isinstance(msg, list):                 # JSON-RPC 批量
+                if not msg:
+                    _emit(_error(None, -32600, "空批次"))
+                    continue
+                replies = []
+                for m in msg:
+                    try:
+                        r = handle(m)
+                    except Exception:
+                        traceback.print_exc(file=sys.stderr)
+                        r = _error(m.get("id") if isinstance(m, dict) else None,
+                                   -32603, "内部错误")
+                    if r is not None:
+                        replies.append(r)
+                if replies:
+                    _emit(replies)
+                continue
+
             reply = handle(msg)
         except Exception:
             traceback.print_exc(file=sys.stderr)
-            reply = _error(msg.get("id"), -32603, "内部错误")
+            reply = _error(msg.get("id") if isinstance(msg, dict) else None,
+                           -32603, "内部错误")
+
         if reply is not None:
-            sys.stdout.write(json.dumps(reply, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
+            _emit(reply)
     return 0

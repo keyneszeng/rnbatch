@@ -9,11 +9,12 @@
   rnbatch mcp         以 MCP server 运行，供任意 agent 调用
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
-from .engine import apply_plan, collect, plan, undo  # noqa: F401
+from .engine import (ConflictError, apply_plan, check_conflicts, collect,  # noqa: F401
+                     plan, undo)
 from .extract import extract_text  # noqa: F401
 from .keywords import suggest  # noqa: F401
 
 __all__ = ["__version__", "collect", "plan", "apply_plan", "undo",
-           "extract_text", "suggest"]
+           "check_conflicts", "ConflictError", "extract_text", "suggest"]
