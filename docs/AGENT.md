@@ -39,14 +39,39 @@ rnbatch 暴露两种 agent 接口，二选一：
 |---|---|---|
 | `list_files` | `path`, `recursive?`, `only?` | 文件清单（名称/类型/大小） |
 | `extract_text` | `path`, `files?`, `max_files?`, `limit?` | 正文 + 候选关键词 + 每条的判断依据 |
-| `preview_rename` | `path`, `keyword`, `template?`, `sort?`, `start?`, `pad?`, `recursive?`, `only?` | 逐行 `from → to`，**不动文件** |
-| `apply_rename` | 同上 | 改动数 + `undo_log` 句柄 |
-| `undo_rename` | `log?` | 还原数 / 跳过数 |
+| `preview_rename` | `path`, `keyword`, `template?`, `sort?`, `start?`, `pad?`, `recursive?`, `only?` | 逐行 `from → to`，**不动文件**；另带 `conflicts` / `warnings` |
+| `apply_rename` | 同上 | 改动数 + `undo_log` 句柄；冲突时返回 `error` 而非抛异常 |
+| `undo_rename` | `log?` | 还原数 / 跳过数；日志不存在时返回 `{restored:0, error}` |
 | `recent_renames` | — | 最近 20 次记录 |
 
 `initialize` 响应里带 `instructions`，明确要求 agent：
 **先 `extract_text` 找关键词 → `preview_rename` 给用户看 → 用户确认后才 `apply_rename`**。
 安全边界写在协议层，不靠客户端自觉。
+
+### 返回里必须看的两个字段
+
+`preview_rename` 除了 `rows`，还返回两个**你必须在动手前处理掉**的字段：
+
+| 字段 | 含义 | 该怎么处理 |
+|---|---|---|
+| `conflicts` | 目标名已被目录里别的文件占用的条数（`>0` 时 `rows` 里对应行 `conflict: true`） | **`apply_rename` 会被拒绝，一个文件都不碰。** 换模板、加 `start`，或让用户先挪走占位文件 |
+| `warnings` | `[{type:"truncated", file, kept_bytes, limit}]`，名字超过 200 字节被截断 | 转述给用户，建议换短一点的关键词 |
+
+`apply_rename` 遇到冲突**不抛异常**，返回 `{"renamed": 0, "error": "...", "hint": "..."}`。
+所以判成功要看 `renamed`，不要只看有没有 `error` 键。
+
+### 容错约定（可以少写一堆防御代码）
+
+agent 传参不规范是常态，这些情况工具层已经兜住，不会让整次调用失败：
+
+| 传入 | 行为 |
+|---|---|
+| `start: "abc"` / `pad: -3` | 用默认值，不报 `invalid literal for int()` |
+| `only: 5`（非数组） | 当作「不过滤」 |
+| `files` 里含 `../../etc/hosts` | 越界项直接丢弃，不会读到目录外 |
+| 缺 `path` | 返回一句人话「缺少 path 参数…」，不是 `KeyError` |
+| `keyword` 全是不合法字符 | 返回「keyword 不能为空」 |
+| 客户端发来 JSON-RPC 批量数组 | 支持，逐个处理并批量回包 |
 
 ### 一次完整调用
 
@@ -98,11 +123,31 @@ rnbatch serve --port 8765 --no-browser
 |---|---|---|
 | `/api/list` | POST | `{path, recursive?, only?}` |
 | `/api/extract` | POST | `{path, files?, limit?}` |
-| `/api/preview` | POST | `{path, kw, template?, sort?, recursive?}` |
+| `/api/preview` | POST | `{path, kw, template?, sort?, start?, pad?, recursive?, only?}` |
 | `/api/apply` | POST | 同上 |
 | `/api/undo` | POST | `{log?}` |
 | `/api/logs` | POST | `{}` |
 | `/api/pick-folder` | POST | `{prompt?}` —— 弹 macOS 原生选择器，返回真实路径 |
+
+`/api/preview` 的返回比 MCP 版本多几个便于渲染的字段：
+
+```jsonc
+{
+  "ok": true,
+  "count": 7, "changed": 7,
+  "conflicts": 0, "conflict_names": [],          // 目标名被占用的条数 + 前 5 个名字
+  "warnings": [],                                 // [{type:"truncated", file, kept_bytes, limit}]
+  "skipped_symlinks": 1,                          // 被跳过的符号链接数
+  "stale_temp": [],                               // 上次中途被杀留下的 .rnbatch.tmp.*
+  "rows": [{
+    "from": "IMG_1.jpg", "to": "星海-01.jpg",
+    "from_label": "sub/IMG_1.jpg",                // 递归时的相对路径，避免两个 a.txt 分不清
+    "to_label": "sub/星海-01.jpg",
+    "from_path": "/abs/...", "to_path": "/abs/...",
+    "changed": true, "conflict": false, "type": "照片"
+  }]
+}
+```
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8765/api/preview?t=$TOKEN" \
@@ -111,6 +156,8 @@ curl -s -X POST "http://127.0.0.1:8765/api/preview?t=$TOKEN" \
 ```
 
 失败一律返回 `{"ok": false, "error": "..."}`，HTTP 400。
+`error` 已经是给人看的中文句子（不再带 `ValueError:` / `KeyError:` 这类类型前缀），
+可以直接转述给用户。`/api/apply` 遇到冲突返回 `{"ok": false, "error": "...", "conflicts": [...]}`。
 
 ---
 

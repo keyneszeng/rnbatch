@@ -146,7 +146,7 @@ def cmd_preview(args) -> int:
         if len(conflicts) > 5:
             print(f"     …另有 {len(conflicts) - 5} 个")
         print("   处理办法：换模板、加 --start，或先把占位文件挪走。")
-        return 0
+        return 3          # 专门的退出码，好让外层脚本判断「预览有冲突」
 
     if changed:
         print("确认无误后，把 preview 换成 apply 执行（会写撤销日志）。")

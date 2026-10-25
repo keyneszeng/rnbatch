@@ -177,6 +177,23 @@ rnbatch undo 20261023-….json   # 撤销指定批次
 rnbatch logs              # 看看历史记录
 ```
 
+### 退出码（写脚本时用）
+
+| 码 | 含义 |
+|---|---|
+| `0` | 成功（`preview` 无冲突也算成功） |
+| `1` | `apply` 失败，已尽力回滚 |
+| `2` | 用法错误 / 路径不存在 / 没有可处理的文件 |
+| `3` | **`preview` 发现目标名被占用** —— 别接着跑 `apply`，它一定会被拒绝 |
+
+```bash
+if rnbatch preview "$DIR" --kw "$KW"; then
+  rnbatch apply "$DIR" --kw "$KW"
+else
+  echo "预览没通过，先处理冲突"; exit 3
+fi
+```
+
 ---
 
 ## 模板
@@ -263,7 +280,7 @@ src/rnbatch/
 所以测试可以在临时目录里跑完整流程，不需要 mock 文件系统。
 
 ```bash
-python -m unittest discover -s tests     # 95 个测试
+python -m unittest discover -s tests     # 104 个测试
 ```
 
 ---
@@ -278,7 +295,7 @@ python -m unittest discover -s tests     # 95 个测试
 
 ## 状态
 
-`v0.2.1` —— 三种形态都能跑，在真实项目文件夹上验证过（改名 + 回滚 + 95 个测试）。
+`v0.2.1` —— 三种形态都能跑，在真实项目文件夹上验证过（改名 + 回滚 + 104 个测试）。
 这一版专门做了一轮压测：拿边界样本（超长名、非法字符、同名不同扩展名、符号链接、
 NFD 编码、加密 PDF、畸形 JSON-RPC 请求）逐个试，挖出并修掉 20 多个问题，
 明细见 [CHANGELOG.md](CHANGELOG.md)。
