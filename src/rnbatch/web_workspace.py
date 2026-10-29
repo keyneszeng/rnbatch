@@ -33,6 +33,7 @@ ALLOWED_FIELDS = ("kw", "template", "sort", "start", "pad")
 @dataclass
 class Workspace:
     identifier: str
+    owner: str
     base: Path
     files: Path
     logs: Path
@@ -120,28 +121,34 @@ class WorkspaceStore:
                 finally:
                     w.lock.release()
 
-    def create(self) -> dict:
+    def create(self, owner: str = "") -> dict:
         self._cleanup_expired()
+        with self._lock:
+            active = sum(w.owner == owner for w in self._items.values())
+            if active >= 5:
+                raise ValueError("每个用户最多可创建 5 个临时工作区，请删除旧工作区")
         base = Path(tempfile.mkdtemp(prefix="rnbatch-web-"))
         files = base / "files"
         logs = base / "undo"
         files.mkdir()
         logs.mkdir()
         ident = secrets.token_urlsafe(24)
-        w = Workspace(ident, base, files, logs)
+        w = Workspace(ident, owner, base, files, logs)
         with self._lock:
             self._items[ident] = w
         return {"ok": True, "workspace": ident, "expires_in": EXPIRE_SECONDS,
                 "limits": {"files": MAX_FILES, "total_bytes": MAX_TOTAL,
                            "file_bytes": MAX_FILE}}
 
-    def get(self, ident: str) -> Workspace:
+    def get(self, ident: str, *, owner: str | None = None) -> Workspace:
         if not isinstance(ident, str) or not ident:
             raise ValueError("缺少 workspace 标识")
         with self._lock:
             w = self._items.get(ident)
             if w is None or time.monotonic() - w.touched > EXPIRE_SECONDS:
                 raise ValueError("工作区不存在或已过期，请重新上传")
+            if owner is not None and w.owner != owner:
+                raise ValueError("工作区不存在或没有访问权限")
             w.touched = time.monotonic()
             return w
 
