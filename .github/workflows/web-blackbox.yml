@@ -1,0 +1,67 @@
+name: web-blackbox
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  chromium-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install project from checked-out commit
+        run: python -m pip install -e .
+      - name: Install Playwright and Chromium
+        run: |
+          npm install --no-save --no-package-lock playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: Launch Web App server and black-box test in Chromium
+        shell: bash
+        env:
+          E2E_PASSWORD_A: "BlackboxStrongPass_2026_A!"
+          E2E_PASSWORD_B: "BlackboxStrongPass_2026_B!"
+          E2E_BASE: "http://127.0.0.1:8766"
+        run: |
+          set -euo pipefail
+          export TEST_DB="$RUNNER_TEMP/rnbatch-blackbox-users.sqlite3"
+          python - <<'PY'
+          import os
+          from rnbatch.web_auth import AuthStore
+          auth = AuthStore(os.environ["TEST_DB"])
+          auth.add_user("alice", os.environ["E2E_PASSWORD_A"])
+          auth.add_user("bob", os.environ["E2E_PASSWORD_B"])
+          PY
+
+          python -m rnbatch web --port 8766 --db "$TEST_DB" > "$RUNNER_TEMP/web-server.log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            status=$?
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "==== web server log ===="
+              cat "$RUNNER_TEMP/web-server.log"
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          for i in {1..50}; do
+            if curl -fsS http://127.0.0.1:8766/ > /dev/null; then
+              break
+            fi
+            sleep 0.2
+          done
+          curl -fsS http://127.0.0.1:8766/ > /dev/null
+          node tests/blackbox_web_ui.mjs
