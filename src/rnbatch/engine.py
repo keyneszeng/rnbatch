@@ -339,7 +339,6 @@ def apply_plan(pairs, keyword: str = "", template: str = "") -> Path | None:
                 "time": datetime.now().isoformat(timespec="seconds"),
                 "keyword": keyword,
                 "template": template,
-                "status": "pending",
                 "records": records,
             }, fh, ensure_ascii=False, indent=2)
             fh.flush()
