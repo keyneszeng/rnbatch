@@ -1,0 +1,16 @@
+name: docker-cloudflare-check
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  container-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose syntax
+        run: docker compose --env-file deploy/cloudflare/.env.example -f deploy/cloudflare/compose.yaml config --quiet
+      - name: Build rnbatch container
+        run: docker compose --env-file deploy/cloudflare/.env.example -f deploy/cloudflare/compose.yaml build rnbatch
