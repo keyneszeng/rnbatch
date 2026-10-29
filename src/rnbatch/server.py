@@ -346,22 +346,28 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 archive = browser_store.archive((qs.get("workspace") or [""])[0])
-                self.send_response(200)
-                self.send_header("Content-Type", "application/zip")
-                self.send_header("Content-Disposition",
-                                 'attachment; filename="rnbatch-files.zip"')
-                self.send_header("Content-Length", str(archive.stat().st_size))
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.end_headers()
+                length = archive.stat().st_size
+            except (ValueError, OSError) as e:
+                self._json(400, {"ok": False, "error": str(e)})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="rnbatch-files.zip"')
+            self.send_header("Content-Length", str(length))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            try:
                 with archive.open("rb") as fh:
                     while True:
                         chunk = fh.read(65536)
                         if not chunk:
                             break
                         self.wfile.write(chunk)
-            except (ValueError, OSError) as e:
-                self._json(400, {"ok": False, "error": str(e)})
+            except (BrokenPipeError, ConnectionResetError):
+                # 客户端取消下载是预期情况；不要再次向已经开始的响应写 JSON。
+                pass
             return
         if u.path == "/favicon.ico":
             self._send(204, b"", "image/x-icon")
