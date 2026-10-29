@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#0b1329">
+  <meta name="description" content="rnbatch 免费浏览器演示版：本地读取、提取候选关键词、批量预览、下载 ZIP。文件不会上传服务器。">
+  <title>rnbatch · 在线文件批量命名</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="top-inner">
+      <div class="brand"><span class="brand-icon" aria-hidden="true">r<span>.</span></span><span>rnbatch</span><span class="mini-tag">DEMO</span></div>
+      <span class="top-status"><span class="status-dot"></span> Cloudflare Pages · 免费浏览器版</span>
+    </div>
+  </header>
+  <main class="layout">
+    <div class="intro">
+      <div class="eyebrow">SMART FILE RENAMER / 文件智能命名</div>
+      <h1>文件整理，<span>从此有序。</span></h1>
+      <p>把杂乱文件整理成统一命名。选择文件、提取项目关键词、预览结果，最后一次性下载 ZIP。</p>
+      <div class="privacy"><span aria-hidden="true">◈</span> 文件始终留在你的浏览器中处理，<strong>不上传服务器</strong>，不需要注册。</div>
+    </div>
+    <section class="panel" aria-labelledby="upload-title">
+      <div class="section-heading"><span class="step">01</span><div><h2 id="upload-title">添加文件</h2><p>支持批量文件、整个文件夹，也可以拖入文件</p></div><span class="counter" id="file-count">0 个文件</span></div>
+      <div class="dropzone" id="dropzone">
+        <div class="drop-icon" aria-hidden="true">⇧</div>
+        <strong>拖拽文件到这里，开始整理</strong>
+        <span>或使用下方按钮选择文件和文件夹</span>
+        <div class="file-actions">
+          <label class="btn btn-primary" for="files">选择文件<input type="file" multiple id="files"></label>
+          <label class="btn btn-light" for="folder">选择文件夹<input type="file" webkitdirectory multiple id="folder"></label>
+        </div>
+        <small>演示上限：80 个文件、总计 40 MB，浏览器本地处理</small>
+      </div>
+      <div class="file-list" id="file-list" aria-live="polite"></div>
+    </section>
+    <section class="panel" aria-labelledby="keyword-title">
+      <div class="section-heading"><span class="step">02</span><div><h2 id="keyword-title">提取关键词</h2><p>从文档正文寻找项目名，也可以自己输入</p></div></div>
+      <div class="keyword-row"><input id="keyword" type="text" maxlength="50" placeholder="例如：星海中心" aria-label="命名关键词"><button class="btn btn-light" id="extract" disabled>从正文提取</button></div>
+      <div class="suggestions" id="suggestions"></div>
+      <p class="tip">可读取 TXT / MD / CSV / JSON、DOCX / PPTX / XLSX 的文本内容。PDF、扫描件及图片请手动填写关键词。</p>
+    </section>
+    <section class="panel" aria-labelledby="preview-title">
+      <div class="section-heading"><span class="step">03</span><div><h2 id="preview-title">选择规则，预览改名</h2><p>执行之前，先检查每一项结果</p></div></div>
+      <div class="options">
+        <label>命名规则<select id="template">
+          <option value="{kw}-{n:02}-{type}">关键词 - 序号 - 文件类型</option>
+          <option value="{kw}-{n:02}">关键词 - 序号</option>
+          <option value="{kw}-{orig}">关键词 - 原文件名</option>
+          <option value="{kw}-{date}-{n:02}">关键词 - 日期 - 序号</option>
+        </select></label>
+        <label>排序方式<select id="sort"><option value="name">按文件名</option><option value="size">按文件大小</option><option value="date">按最后修改时间</option></select></label>
+      </div>
+      <div class="toolbar"><button class="btn btn-dark" id="preview" disabled>生成预览 <span aria-hidden="true">→</span></button><button class="btn btn-ghost" id="reset" disabled>清除所有文件</button><span class="preview-info" id="preview-info">添加文件并输入关键词后即可预览</span></div>
+      <div class="table-scroll"><table><thead><tr><th>原始文件路径</th><th>新文件路径</th><th>状态</th></tr></thead><tbody id="preview-rows"><tr class="empty-row"><td colspan="3">这里将显示你的批量命名结果</td></tr></tbody></table></div>
+    </section>
+    <section class="finish">
+      <div><h2>准备好了？</h2><p>原始文件不会被修改。生成新文件副本并打包下载。</p></div>
+      <button class="btn btn-finish" id="download" disabled>下载整理后的 ZIP <span aria-hidden="true">↓</span></button>
+    </section>
+    <div id="message" role="status" aria-live="polite"></div>
+    <footer>rnbatch · Cloudflare Pages 免费演示版　|　无云端账户 / 无服务器文件存储　|　<a href="https://github.com/keyneszeng/rnbatch" target="_blank" rel="noopener noreferrer">开源项目</a></footer>
+  </main>
+</body></html>
