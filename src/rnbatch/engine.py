@@ -319,6 +319,12 @@ def apply_plan(pairs, keyword: str = "", template: str = "") -> Path | None:
         raise ConflictError(conflicts)
 
     UNDO_DIR.mkdir(parents=True, exist_ok=True)
+    pending = sorted(UNDO_DIR.glob("*.pending"))
+    if pending:
+        raise RuntimeError(
+            "发现未完成的改名事务，请先检查恢复记录与临时文件："
+            + str(pending[0])
+        )
     ident = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
     log_path = UNDO_DIR / f"{ident}.json"
     journal_path = UNDO_DIR / f"{ident}.pending"
@@ -428,6 +434,9 @@ def undo(log: str | Path | None = None) -> tuple[int, int]:
         if data is None:
             raise ValueError("最近的撤销日志都已损坏，无法还原。")
 
+    # .pending 是未提交的恢复记录，不允许作为普通撤销日志操作。
+    if target.suffix != ".json":
+        raise ValueError(f"不能撤销未提交事务，请先人工检查恢复记录：{target.name}")
     # 兼容旧版本不含 status 的日志，拒绝非完成状态的事务。
     if data.get("status", "completed") != "completed":
         raise ValueError(f"日志尚未完成，禁止直接撤销：{target.name}")
