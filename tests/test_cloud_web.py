@@ -209,5 +209,22 @@ class TestAuthenticatedHttp(unittest.TestCase):
         self.assertEqual(status,401)
 
 
+class TestCloudFrontend(unittest.TestCase):
+    def test_browser_script_syntax(self):
+        import re
+        import shutil
+        if shutil.which("node") is None:
+            self.skipTest("Node.js not installed")
+        for filename in ("login.html", "cloud.html"):
+            path = (Path(__file__).resolve().parents[1] /
+                    "src/rnbatch/web" / filename)
+            content = path.read_text(encoding="utf-8")
+            scripts = re.findall(r"<script[^>]*>(.*?)</script>", content, re.DOTALL)
+            self.assertTrue(scripts, filename)
+            for script in scripts:
+                result = subprocess.run(["node", "--check"], input=script,
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, filename + ": " + result.stderr)
+
 if __name__ == "__main__":
     unittest.main()
