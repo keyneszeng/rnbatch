@@ -87,9 +87,17 @@ class WorkspaceStore:
     def __init__(self):
         self._items: dict[str, Workspace] = {}
         self._lock = threading.RLock()
+        self._stop = threading.Event()
+        self._sweeper = threading.Thread(target=self._sweep_loop, daemon=True)
+        self._sweeper.start()
         atexit.register(self.close)
 
+    def _sweep_loop(self):
+        while not self._stop.wait(60):
+            self._cleanup_expired()
+
     def close(self):
+        self._stop.set()
         with self._lock:
             workspaces = list(self._items.values())
             self._items.clear()
