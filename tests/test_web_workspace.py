@@ -93,6 +93,22 @@ class TestWebWorkspaces(unittest.TestCase):
         self.assertEqual(validate_options({"kw": "abc", "template": "{kw}-{n:02}"})["kw"],
                          "abc")
 
+    def test_workspaces_keep_files_and_logs_separate(self):
+        self.upload("private.txt", b"workspace-one")
+        sid2 = self.store.create()["workspace"]
+        self.store.upload(sid2, "other.txt", io.BytesIO(b"workspace-two"), 13)
+        self.assertEqual(self.store.listing(self.sid)["count"], 1)
+        self.assertEqual(self.store.listing(sid2)["count"], 1)
+        p1 = self.store.preview(self.sid, {"kw": "first"})
+        self.store.apply(self.sid, p1["plan_token"])
+        p2 = self.store.preview(sid2, {"kw": "second"})
+        self.store.apply(sid2, p2["plan_token"])
+        self.assertNotEqual(self.store.get(self.sid).logs,
+                            self.store.get(sid2).logs)
+        self.assertEqual(len(list(self.store.get(self.sid).logs.glob("*.json"))), 1)
+        self.assertEqual(len(list(self.store.get(sid2).logs.glob("*.json"))), 1)
+        self.assertTrue(self.store.get(sid2).files.joinpath("second-01.txt").exists())
+
     def test_plan_snapshot_changes_refuse_apply(self):
         self.upload("a.txt", b"before")
         preview = self.store.preview(self.sid, {"kw": "changed"})
@@ -165,6 +181,11 @@ class TestHttpWebWorkspaces(unittest.TestCase):
             self.assertEqual(len(zf.namelist()), 1)
             self.assertTrue(zf.namelist()[0].startswith("目录/星海中心"))
         self.json_request("/api/workspaces/delete", {"workspace": sid})
+
+    def test_workspace_create_disallows_get(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.request("/api/workspaces/create?t=http-test-token")
+        self.assertEqual(ctx.exception.code, 405)
 
     def test_http_rejects_invalid_json_and_excessive_content_length(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
