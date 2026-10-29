@@ -1,0 +1,43 @@
+name: cloudflare-pages-free-demo
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  pages-browser-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install static demo dependencies
+        working-directory: demo
+        run: npm install --no-audit --no-fund
+      - name: Build Cloudflare Pages static assets
+        working-directory: demo
+        run: npm run build
+      - name: Install browser test runner
+        working-directory: demo
+        run: npm install --no-save --no-package-lock playwright@1.56.1
+      - name: Install headless Chromium
+        working-directory: demo
+        run: npx playwright install --with-deps chromium
+      - name: Browser black-box test on static Pages output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m http.server 4173 --directory demo/dist > /tmp/demo-server.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..50}; do
+            if curl -fsS http://127.0.0.1:4173/ > /dev/null; then break; fi
+            sleep .2
+          done
+          (cd demo && node tests/blackbox.mjs)
