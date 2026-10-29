@@ -72,7 +72,7 @@ def validate_options(options: dict) -> dict:
     if not isinstance(template, str) or len(template) > 180:
         raise ValueError("模板过长或格式不正确")
     permitted = re.sub(r"\{(?:kw|n|orig|date|type|ext|n:0?\d{1,2}d?)\}", "", template)
-    if "{" in permitted or "}" in permitted or re.search(r"\{n:0?(?:\d{2,})", template):
+    if "{" in permitted or "}" in permitted:
         raise ValueError("模板中包含不支持的占位符")
     for digits in re.findall(r"\{n:0?(\d{1,2})d?\}", template):
         if int(digits) > 12:
