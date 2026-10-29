@@ -108,6 +108,36 @@ class TestTransactionalRename(unittest.TestCase):
         self.assertEqual(engine.undo(log), (3, 0))
         self.assertEqual(self.snapshot(), before)
 
+    def test_existing_pending_transaction_blocks_new_apply(self):
+        self.make_files(["a.txt"])
+        before = self.snapshot()
+        engine.UNDO_DIR.mkdir(parents=True)
+        (engine.UNDO_DIR / "incomplete.pending").write_text(
+            '{"records":[]}', encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "未完成"):
+            engine.apply_plan([(self.root / "a.txt", self.root / "new.txt")])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_pending_journal_cannot_be_passed_to_undo(self):
+        self.make_files(["a.txt"])
+        log = engine.apply_plan([(self.root / "a.txt", self.root / "new.txt")])
+        pending = engine.UNDO_DIR / "unfinished.pending"
+        pending.write_text(log.read_text(encoding="utf-8"), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "未提交"):
+            engine.undo(pending)
+        self.assertTrue((self.root / "new.txt").exists())
+
+    def test_undo_skips_external_file_in_original_location(self):
+        self.make_files(["a.txt"])
+        log = engine.apply_plan([(self.root / "a.txt", self.root / "new.txt")])
+        (self.root / "a.txt").write_text("someone else's file", encoding="utf-8")
+        self.assertEqual(engine.undo(log), (0, 1))
+        self.assertEqual((self.root / "new.txt").read_text(encoding="utf-8"),
+                         "payload-0")
+        self.assertEqual((self.root / "a.txt").read_text(encoding="utf-8"),
+                         "someone else's file")
+        self.assertTrue(log.exists())
+
     def test_undo_failure_after_first_restore_preserves_renamed_state(self):
         self.make_files(["a.txt", "b.txt", "c.txt"])
         pairs = [(self.root / n, self.root / f"new-{n}")
