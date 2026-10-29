@@ -304,7 +304,8 @@ def _restore_staged(staged, completed) -> list[str]:
     return errors
 
 
-def apply_plan(pairs, keyword: str = "", template: str = "") -> Path | None:
+def apply_plan(pairs, keyword: str = "", template: str = "", *,
+               undo_dir: Path | None = None) -> Path | None:
     """先持久化恢复映射，再执行两阶段改名；成功后发布撤销日志。
 
     进程内异常会尽力完整回滚。SIGKILL/断电后，保留 .pending 日志
@@ -318,16 +319,17 @@ def apply_plan(pairs, keyword: str = "", template: str = "") -> Path | None:
     if conflicts:
         raise ConflictError(conflicts)
 
-    UNDO_DIR.mkdir(parents=True, exist_ok=True)
-    pending = sorted(UNDO_DIR.glob("*.pending"))
+    log_dir = Path(undo_dir) if undo_dir is not None else UNDO_DIR
+    log_dir.mkdir(parents=True, exist_ok=True)
+    pending = sorted(log_dir.glob("*.pending"))
     if pending:
         raise RuntimeError(
             "发现未完成的改名事务，请先检查恢复记录与临时文件："
             + str(pending[0])
         )
     ident = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
-    log_path = UNDO_DIR / f"{ident}.json"
-    journal_path = UNDO_DIR / f"{ident}.pending"
+    log_path = log_dir / f"{ident}.json"
+    journal_path = log_dir / f"{ident}.pending"
     operations = [
         (a, b, a.with_name(f".rnbatch.tmp.{a.stem[:40]}.{uuid.uuid4().hex[:8]}"))
         for a, b in todo
@@ -406,19 +408,21 @@ def load_log(p: Path) -> dict | None:
     return data
 
 
-def undo(log: str | Path | None = None) -> tuple[int, int]:
+def undo(log: str | Path | None = None, *,
+         undo_dir: Path | None = None) -> tuple[int, int]:
     """安全撤销：先全移到临时名，再恢复原名，支持互换和循环改名。
 
     对缺失的文件、被新文件占用的原路径采取跳过策略，不覆盖已有文件。
     """
-    logs = list_undo_logs()
+    log_dir = Path(undo_dir) if undo_dir is not None else UNDO_DIR
+    logs = sorted(log_dir.glob("*.json"))
     if not logs:
         raise FileNotFoundError("没有可撤销的记录。")
 
     if log:
         target = Path(log)
         if not target.exists():
-            target = UNDO_DIR / str(log)
+            target = log_dir / str(log)
         if not target.exists():
             raise FileNotFoundError(f"找不到日志: {log}")
         data = load_log(target)
