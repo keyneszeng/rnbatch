@@ -143,32 +143,34 @@ def make_handler(auth: AuthStore, store: WorkspaceStore, origin: str):
                 sess = self._auth()
                 if not sess:
                     return
+                sent = False
                 try:
                     wid = (parse_qs(route.query).get("workspace") or [""])[0]
                     self._owned(sess, wid)
                     archive = store.archive(wid)
                     with archive.open("rb") as source:
-                        # Open before sending headers; do not send a second response
-                        # if the browser cancels the download mid-stream.
+                        length = archive.stat().st_size
                         self.send_response(200)
                         self.send_header("Content-Type", "application/zip")
                         self.send_header("Content-Disposition",
                                          'attachment; filename="rnbatch-files.zip"')
-                        self.send_header("Content-Length", str(archive.stat().st_size))
+                        self.send_header("Content-Length", str(length))
                         self.send_header("Cache-Control", "no-store")
                         self.send_header("X-Content-Type-Options", "nosniff")
                         self.send_header("Referrer-Policy", "no-referrer")
                         self.end_headers()
-                        try:
-                            while True:
-                                chunk = source.read(65536)
-                                if not chunk:
-                                    break
-                                self.wfile.write(chunk)
-                        except (BrokenPipeError, ConnectionResetError):
-                            pass
+                        sent = True
+                        while True:
+                            chunk = source.read(65536)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
                 except (OSError, ValueError) as e:
-                    self._json(400, {"ok": False, "error": str(e)})
+                    if not sent:
+                        self._json(400, {"ok": False, "error": str(e)})
+                    else:
+                        # Headers/body already started; never send a second response.
+                        self.close_connection = True
                 return
             self._json(404, {"ok": False, "error": "未知页面或 API"})
 
