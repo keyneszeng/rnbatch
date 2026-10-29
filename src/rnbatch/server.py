@@ -27,6 +27,7 @@ from .engine import (ConflictError, apply_plan, check_conflicts, collect,
                      find_symlinks, list_undo_logs, load_log, plan,
                      relative_label, sanitize, stale_temp_files, undo)
 from .extract import extract_text, rich_texts, type_of
+from .web_workspace import MAX_FILE, store as browser_store
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -243,7 +244,42 @@ def api_logs(_payload: dict) -> dict:
     return {"ok": True, "logs": list(reversed(out))[-20:]}
 
 
+def api_workspace_create(_payload: dict) -> dict:
+    return browser_store.create()
+
+
+def api_workspace_list(payload: dict) -> dict:
+    return browser_store.listing(payload.get("workspace"))
+
+
+def api_workspace_extract(payload: dict) -> dict:
+    return browser_store.extract(payload.get("workspace"))
+
+
+def api_workspace_preview(payload: dict) -> dict:
+    return browser_store.preview(payload.get("workspace"), payload)
+
+
+def api_workspace_apply(payload: dict) -> dict:
+    return browser_store.apply(payload.get("workspace"), payload.get("plan_token"))
+
+
+def api_workspace_undo(payload: dict) -> dict:
+    return browser_store.revert(payload.get("workspace"))
+
+
+def api_workspace_delete(payload: dict) -> dict:
+    return browser_store.delete(payload.get("workspace"))
+
+
 ROUTES = {
+    "/api/workspaces/create": api_workspace_create,
+    "/api/workspaces/list": api_workspace_list,
+    "/api/workspaces/extract": api_workspace_extract,
+    "/api/workspaces/preview": api_workspace_preview,
+    "/api/workspaces/apply": api_workspace_apply,
+    "/api/workspaces/undo": api_workspace_undo,
+    "/api/workspaces/delete": api_workspace_delete,
     "/api/pick-folder": api_pick_folder,
     "/api/list": api_list,
     "/api/extract": api_extract,
@@ -277,6 +313,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(body)
 
@@ -302,6 +340,29 @@ class Handler(BaseHTTPRequestHandler):
                     .replace("__VERSION__", __version__))
             self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
             return
+        if u.path == "/api/workspaces/download":
+            if not self._authorized(qs):
+                self._json(403, {"ok": False, "error": "token 无效"})
+                return
+            try:
+                archive = browser_store.archive((qs.get("workspace") or [""])[0])
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition",
+                                 'attachment; filename="rnbatch-files.zip"')
+                self.send_header("Content-Length", str(archive.stat().st_size))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                with archive.open("rb") as fh:
+                    while True:
+                        chunk = fh.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+            except (ValueError, OSError) as e:
+                self._json(400, {"ok": False, "error": str(e)})
+            return
         if u.path == "/favicon.ico":
             self._send(204, b"", "image/x-icon")
             return
@@ -324,6 +385,21 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         qs = parse_qs(u.query)
         fn = ROUTES.get(u.path)
+        if u.path == "/api/workspaces/upload":
+            if not self._authorized(qs):
+                self._json(403, {"ok": False, "error": "token 无效"})
+                return
+            try:
+                n = int(self.headers.get("Content-Length") or "-1")
+                if n < 0 or n > MAX_FILE:
+                    raise ValueError("上传文件必须包含 Content-Length 且不超过 25 MB")
+                result = browser_store.upload(
+                    (qs.get("workspace") or [""])[0],
+                    (qs.get("name") or [""])[0], self.rfile, n)
+                self._json(200, result)
+            except Exception as e:
+                self._json(400, {"ok": False, "error": err_text(e)})
+            return
         if fn is None:
             self._json(404, {"ok": False, "error": "unknown endpoint"})
             return
@@ -332,6 +408,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             n = int(self.headers.get("Content-Length") or 0)
+            if n < 0 or n > 1024 * 1024:
+                raise ValueError("请求体超过 1 MB 限制")
             payload = json.loads(self.rfile.read(n) or b"{}")
             if not isinstance(payload, dict):
                 raise ValueError("payload 必须是对象")
