@@ -367,17 +367,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(204, b"", "image/x-icon")
             return
         if u.path.startswith("/api/"):
-            fn = ROUTES.get(u.path)
-            if fn is None:
-                self._json(404, {"ok": False, "error": "unknown endpoint"})
-                return
-            if not self._authorized(qs):
-                self._json(403, {"ok": False, "error": "token 无效"})
-                return
-            try:
-                self._json(200, fn({}))
-            except Exception as e:
-                self._json(400, {"ok": False, "error": err_text(e)})
+            self._json(405, {"ok": False, "error": "此 API 必须使用 POST"})
             return
         self._send(404, b"not found", "text/plain")
 
