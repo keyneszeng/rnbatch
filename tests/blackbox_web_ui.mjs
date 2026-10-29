@@ -97,11 +97,12 @@ try {
   assert.equal(noCsrf.status, 403);
   ok('已登录但 CSRF 错误的请求被拒绝');
 
+  const csrf = await page.evaluate(() => CSRF);
   const foreignOrigin = await fetch(BASE + '/api/workspaces/create', {
     method:'POST',headers:{
       'Content-Type':'application/json','Origin':'https://untrusted.example',
       'Cookie':'rnbatch_session='+token,
-      'X-RNBatch-CSRF': 'invalid-token'
+      'X-RNBatch-CSRF': csrf
     },body:'{}'
   });
   assert.equal(foreignOrigin.status, 403);
