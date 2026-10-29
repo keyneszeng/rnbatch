@@ -117,6 +117,18 @@ class TestWebWorkspaces(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "发生变化"):
             self.store.apply(self.sid, preview["plan_token"])
 
+    def test_expired_workspace_is_rejected_and_cleaned(self):
+        from rnbatch.web_workspace import EXPIRE_SECONDS
+        import time
+        w = self.store.get(self.sid)
+        base = w.base
+        self.upload("a.txt", b"secret data")
+        w.touched = time.monotonic() - EXPIRE_SECONDS - 1
+        with self.assertRaisesRegex(ValueError, "过期"):
+            self.store.get(self.sid)
+        self.store._cleanup_expired()
+        self.assertFalse(base.exists())
+
     def test_explicit_delete_removes_files(self):
         w = self.store.get(self.sid)
         base = w.base
