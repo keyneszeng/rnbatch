@@ -47,13 +47,14 @@ try {
 
   const legacy = await page.evaluate(async () => {
     const r = await fetch('/api/list', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
+      method: 'POST', headers: {
+        'Content-Type': 'application/json', 'X-RNBatch-CSRF': CSRF
+      },
       body: JSON.stringify({ path: '/etc' })
     });
     return r.status;
   });
-  // CSRF check runs before rejecting unknown POST routes.
-  assert.ok(legacy === 403 || legacy === 404);
+  assert.equal(legacy, 404);
   ok('旧本地目录接口不允许读取服务器文件');
 
   const folder = join(tmp, 'files');
@@ -73,6 +74,39 @@ try {
   await page.getByText('2 个文件上传完成', {exact:false}).waitFor({ timeout: 20000 });
   ok('浏览器选择两个文件并完成隔离上传');
 
+  const traversal = await page.evaluate(async sid => {
+    const qs = new URLSearchParams({workspace:sid, name:'../outside.txt'});
+    const r = await fetch('/api/workspaces/upload?' + qs.toString(), {
+      method:'POST',headers:{'X-RNBatch-CSRF':CSRF},body:new Blob(['pwn'])
+    });
+    return r.status;
+  }, wid);
+  assert.equal(traversal, 400);
+  ok('目录穿越文件名被 HTTP 上传接口拒绝');
+
+  const cookies = await ctx.cookies();
+  const token = cookies.find(c => c.name === 'rnbatch_session')?.value;
+  assert.ok(token);
+  const noCsrf = await fetch(BASE + '/api/workspaces/create', {
+    method:'POST',headers:{
+      'Content-Type':'application/json','Origin':BASE,
+      'Cookie':'rnbatch_session='+token,
+      'X-RNBatch-CSRF':'invalid-token'
+    },body:'{}'
+  });
+  assert.equal(noCsrf.status, 403);
+  ok('已登录但 CSRF 错误的请求被拒绝');
+
+  const foreignOrigin = await fetch(BASE + '/api/workspaces/create', {
+    method:'POST',headers:{
+      'Content-Type':'application/json','Origin':'https://untrusted.example',
+      'Cookie':'rnbatch_session='+token,
+      'X-RNBatch-CSRF': 'invalid-token'
+    },body:'{}'
+  });
+  assert.equal(foreignOrigin.status, 403);
+  ok('伪造其他 Origin 的请求被拒绝');
+
   await page.locator('#extract').click();
   await page.getByText('提取完成', {exact:false}).waitFor({timeout:20000});
   await page.locator('#keyword').fill('黑盒项目');
@@ -82,6 +116,17 @@ try {
   assert.equal(await page.locator('#rows tr').count(), 2);
   assert.equal(await page.locator('#apply').isEnabled(), true);
   ok('文档提取、选择关键词、预览两行且无冲突');
+
+  const withoutToken = await page.evaluate(async sid => {
+    const r = await fetch('/api/workspaces/apply', {
+      method:'POST',headers:{
+        'Content-Type':'application/json','X-RNBatch-CSRF':CSRF
+      },body:JSON.stringify({workspace:sid,plan_token:'not-the-preview-token'})
+    });
+    return r.status;
+  }, wid);
+  assert.equal(withoutToken, 400);
+  ok('未经匹配预览确认的执行被拒绝');
 
   const ctxB = await browser.newContext({acceptDownloads: true});
   const bob = await ctxB.newPage();
