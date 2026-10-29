@@ -272,10 +272,43 @@ def check_conflicts(pairs) -> list[tuple[Path, Path]]:
 
 
 # ------------------------------------------------------------------ 执行
-def apply_plan(pairs, keyword: str = "", template: str = "") -> Path | None:
-    """执行改名，返回 undo 日志路径；无改动返回 None。
+def _restore_staged(staged, completed) -> list[str]:
+    """失败时逆转两阶段操作，避免 A→B / B→A 互换造成覆盖。
 
-    落盘前先查冲突，有冲突直接抛 ConflictError，一个文件都不碰。
+    staged / completed 的每条记录为 (original, destination, temporary)。
+    先把已落到最终名的文件全部重新移回临时名，再恢复所有原名。
+    无法安全恢复时保留文件和 .pending 日志，不强行覆盖任何路径。
+    """
+    errors: list[str] = []
+    for _a, b, tmp in reversed(completed):
+        if not b.exists() or tmp.exists():
+            errors.append(f"无法回收目标文件：{b}")
+            continue
+        try:
+            os.rename(b, tmp)
+        except OSError as e:
+            errors.append(f"无法回收 {b}: {e}")
+
+    for a, _b, tmp in reversed(staged):
+        if not tmp.exists():
+            if not a.exists():
+                errors.append(f"找不到原文件或临时文件：{a}")
+            continue
+        if a.exists():
+            errors.append(f"原路径被占用，拒绝覆盖：{a}")
+            continue
+        try:
+            os.rename(tmp, a)
+        except OSError as e:
+            errors.append(f"无法恢复 {a}: {e}")
+    return errors
+
+
+def apply_plan(pairs, keyword: str = "", template: str = "") -> Path | None:
+    """先持久化恢复映射，再执行两阶段改名；成功后发布撤销日志。
+
+    进程内异常会尽力完整回滚。SIGKILL/断电后，保留 .pending 日志
+    和可能的 .rnbatch.tmp.* 文件供人工修复；暂不声称跨崩溃原子性。
     """
     todo = [(a, b) for a, b in pairs if a.name != b.name]
     if not todo:
@@ -286,36 +319,66 @@ def apply_plan(pairs, keyword: str = "", template: str = "") -> Path | None:
         raise ConflictError(conflicts)
 
     UNDO_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = UNDO_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}.json"
-    records: list[dict] = []
-    staged: list[tuple[Path, Path, Path]] = []
+    pending = sorted(UNDO_DIR.glob("*.pending"))
+    if pending:
+        raise RuntimeError(
+            "发现未完成的改名事务，请先检查恢复记录与临时文件："
+            + str(pending[0])
+        )
+    ident = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+    log_path = UNDO_DIR / f"{ident}.json"
+    journal_path = UNDO_DIR / f"{ident}.pending"
+    operations = [
+        (a, b, a.with_name(f".rnbatch.tmp.{a.stem[:40]}.{uuid.uuid4().hex[:8]}"))
+        for a, b in todo
+    ]
+    records = [
+        {"from": str(a), "to": str(b), "tmp": str(tmp)}
+        for a, b, tmp in operations
+    ]
+
+    # 所有映射先写到磁盘，再触碰任何用户文件。
+    # .pending 不会出现在正常 undo 日志列表中；成功后原子改名为 .json。
     try:
-        for a, b in todo:
-            # 临时名里保留原文件名，万一进程被杀，人能认出这是什么
-            tmp = a.with_name(f".rnbatch.tmp.{a.stem[:40]}.{uuid.uuid4().hex[:8]}")
+        with journal_path.open("x", encoding="utf-8") as fh:
+            json.dump({
+                "time": datetime.now().isoformat(timespec="seconds"),
+                "keyword": keyword,
+                "template": template,
+                "records": records,
+            }, fh, ensure_ascii=False, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except Exception:
+        journal_path.unlink(missing_ok=True)
+        raise
+
+    staged: list[tuple[Path, Path, Path]] = []
+    completed: list[tuple[Path, Path, Path]] = []
+    try:
+        for a, b, tmp in operations:
+            if tmp.exists():
+                raise FileExistsError(f"临时文件名已存在：{tmp}")
             os.rename(a, tmp)
-            staged.append((tmp, a, b))
-        for tmp, a, b in staged:
+            staged.append((a, b, tmp))
+        for a, b, tmp in staged:
             if b.exists():
                 raise FileExistsError(f"目标已存在: {b}")
             os.rename(tmp, b)
-            records.append({"from": str(a), "to": str(b)})
-    except Exception:
-        for tmp, a, _b in staged:                # 尽力回滚
-            if tmp.exists():
-                try:
-                    os.rename(tmp, a)
-                except Exception:
-                    pass
-        raise
+            completed.append((a, b, tmp))
 
-    log_path.write_text(json.dumps({
-        "time": datetime.now().isoformat(timespec="seconds"),
-        "keyword": keyword,
-        "template": template,
-        "records": records,
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
-    return log_path
+        os.replace(journal_path, log_path)
+        return log_path
+    except Exception as cause:
+        failures = _restore_staged(staged, completed)
+        if failures:
+            raise RuntimeError(
+                "批量改名失败，部分文件未能自动恢复；请保留现场，"
+                f"按恢复日志 {journal_path} 处理。"
+                + "；".join(failures)
+            ) from cause
+        journal_path.unlink(missing_ok=True)
+        raise
 
 
 def stale_temp_files(directory: Path) -> list[Path]:
@@ -344,7 +407,10 @@ def load_log(p: Path) -> dict | None:
 
 
 def undo(log: str | Path | None = None) -> tuple[int, int]:
-    """回滚。返回 (成功数, 跳过数)。log 为空则撤销最近一次可用的记录。"""
+    """安全撤销：先全移到临时名，再恢复原名，支持互换和循环改名。
+
+    对缺失的文件、被新文件占用的原路径采取跳过策略，不覆盖已有文件。
+    """
     logs = list_undo_logs()
     if not logs:
         raise FileNotFoundError("没有可撤销的记录。")
@@ -360,7 +426,7 @@ def undo(log: str | Path | None = None) -> tuple[int, int]:
             raise ValueError(f"撤销日志已损坏，无法还原: {target.name}")
     else:
         target, data = None, None
-        for p in reversed(logs):                 # 跳过损坏的，找最近一份能用的
+        for p in reversed(logs):
             d = load_log(p)
             if d is not None:
                 target, data = p, d
@@ -368,14 +434,52 @@ def undo(log: str | Path | None = None) -> tuple[int, int]:
         if data is None:
             raise ValueError("最近的撤销日志都已损坏，无法还原。")
 
-    ok = skipped = 0
-    for rec in reversed(data["records"]):
-        src, dst = Path(rec["to"]), Path(rec["from"])
-        if not src.exists() or dst.exists():
-            skipped += 1
-            continue
-        os.rename(src, dst)
-        ok += 1
+    # .pending 是未提交的恢复记录，不允许作为普通撤销日志操作。
+    if target.suffix != ".json":
+        raise ValueError(f"不能撤销未提交事务，请先人工检查恢复记录：{target.name}")
+    # 兼容旧版本不含 status 的日志，拒绝非完成状态的事务。
+    if data.get("status", "completed") != "completed":
+        raise ValueError(f"日志尚未完成，禁止直接撤销：{target.name}")
+
+    entries = [(Path(rec["to"]), Path(rec["from"])) for rec in reversed(data["records"])]
+    active = [(src, dst) for src, dst in entries if src.exists()]
+    skipped = len(entries) - len(active)
+
+    # 迭代排除被其他文件占用的原目标，并处理连锁依赖。
+    # 如果 dst 同时是本批次另一个 src，暂时允许；两阶段会先腾出它。
+    while True:
+        sources = {src for src, _dst in active}
+        safe = [(src, dst) for src, dst in active
+                if not dst.exists() or dst in sources]
+        if len(safe) == len(active):
+            break
+        skipped += len(active) - len(safe)
+        active = safe
+
+    staged: list[tuple[Path, Path, Path]] = []
+    completed: list[tuple[Path, Path, Path]] = []
+    try:
+        for src, dst in active:
+            tmp = src.with_name(f".rnbatch.tmp.undo.{uuid.uuid4().hex[:12]}")
+            if tmp.exists():
+                raise FileExistsError(f"临时文件名已存在：{tmp}")
+            os.rename(src, tmp)
+            staged.append((src, dst, tmp))
+        for src, dst, tmp in staged:
+            if dst.exists():
+                raise FileExistsError(f"撤销目标已被占用：{dst}")
+            os.rename(tmp, dst)
+            completed.append((src, dst, tmp))
+    except Exception as cause:
+        failures = _restore_staged(staged, completed)
+        if failures:
+            raise RuntimeError(
+                "撤销中途失败且未能完全恢复撤销前状态，请检查临时文件；"
+                + "；".join(failures)
+            ) from cause
+        raise
+
+    ok = len(active)
     if ok and not skipped:
         target.rename(target.with_suffix(".json.done"))
     return ok, skipped
