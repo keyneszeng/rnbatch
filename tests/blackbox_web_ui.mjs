@@ -112,7 +112,7 @@ try {
   assert.equal(download.suggestedFilename(), 'rnbatch-files.zip');
   const inspect = execFileSync('python', [
     '-c',
-    'import json,sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); print(json.dumps({n:z.namelist(),txt:[z.read(x).decode("utf-8") for x in z.namelist() if x.endswith(".txt")]}))',
+    'import json,sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); print(json.dumps({"n":z.namelist(),"txt":[z.read(x).decode("utf-8") for x in z.namelist() if x.endswith(".txt")]}))',
     downloadPath
   ], { encoding: 'utf8' });
   const zip = JSON.parse(inspect);
