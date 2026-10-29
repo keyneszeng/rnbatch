@@ -229,6 +229,34 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_web(args) -> int:
+    from .web_cloud import serve_cloud
+    try:
+        serve_cloud(port=args.port, db_path=args.db, public_origin=args.origin)
+    except (ValueError, RuntimeError, OSError) as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    return 0
+
+
+def cmd_user_add(args) -> int:
+    import getpass
+    import sqlite3
+    from .web_auth import AuthStore
+    try:
+        password = getpass.getpass("新账号密码（12-128 字符）：")
+        confirm = getpass.getpass("再次输入密码：")
+        if password != confirm:
+            print("两次密码不一致", file=sys.stderr)
+            return 2
+        uid = AuthStore(args.db).add_user(args.username, password)
+    except (ValueError, sqlite3.IntegrityError) as e:
+        print(f"创建用户失败：{e}", file=sys.stderr)
+        return 2
+    print(f"账号已创建：{args.username} (ID: {uid})")
+    return 0
+
+
 def cmd_mcp(args) -> int:
     from .mcp_server import run_stdio
     return run_stdio()
@@ -279,6 +307,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_sv.add_argument("--port", type=int, default=8765)
     p_sv.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     p_sv.set_defaults(func=cmd_serve)
+
+    p_web = sub.add_parser("web", help="启动带账户登录的浏览器 Web App（只处理上传副本）")
+    p_web.add_argument("--port", type=int, default=8766)
+    p_web.add_argument("--db", default="~/.rnbatch/web-users.sqlite3",
+                       help="SQLite 账户数据库，默认 ~/.rnbatch/web-users.sqlite3")
+    p_web.add_argument("--origin", default=None,
+                       help="浏览器访问的完整 origin，如 https://files.example.com")
+    p_web.set_defaults(func=cmd_web)
+
+    p_user = sub.add_parser("user-add", help="创建 Web App 登录账户（交互输入密码）")
+    p_user.add_argument("username")
+    p_user.add_argument("--db", default="~/.rnbatch/web-users.sqlite3")
+    p_user.set_defaults(func=cmd_user_add)
 
     p_mc = sub.add_parser("mcp", help="以 MCP server 运行（stdio），供任意 agent 调用")
     p_mc.set_defaults(func=cmd_mcp)

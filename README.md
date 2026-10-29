@@ -92,6 +92,29 @@ pip install -e .
 
 ---
 
+## 带登录的 Web App（v0.4 安全基础研发分支）
+
+**当前主要目标是浏览器 Web App，而非 macOS 安装包。**
+
+本分支新增了独立的 Web 入口（不包含旧版可操作服务器本地路径的 API）。
+管理员先创建用户，再启动带登录的 Web App：
+
+```bash
+rnbatch user-add alice  # 密码交互输入，不写进 shell 历史
+rnbatch web             # 默认 http://127.0.0.1:8766
+```
+
+此入口有账户登录、用户独立工作区、上传预览、确认执行、撤销、ZIP 下载、
+HttpOnly 会话 Cookie、CSRF 和 Host/Origin 检查。原来的 `rnbatch serve`
+仍为可信本地用户的高级模式，**禁止公网暴露**。
+
+> 这不是已经通过安全审计的正式云服务。登录用户的工作区仍是单进程内存索引，
+> 服务重启后会失效；服务器上仍需补齐持久化任务、上传隔离、代理限流和安全审计。
+
+详细配置和部署边界请阅读 [Web App 多用户验证版](docs/WEB_APP.md)。
+
+---
+
 ## 浏览器 Web App（v0.3 研发分支）
 
 **Web App 是现在的主要产品方向，macOS 独立 .app 暂缓。**
