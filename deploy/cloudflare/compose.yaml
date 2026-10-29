@@ -1,0 +1,64 @@
+# Cloudflare Tunnel and app share a network namespace.
+# This is intentional: rnbatch keeps listening on 127.0.0.1 and no host
+# ports are published, yet cloudflared reaches http://127.0.0.1:8766.
+services:
+  rnbatch:
+    build:
+      context: ../..
+      dockerfile: deploy/cloudflare/Dockerfile
+    image: rnbatch-web:local
+    command:
+      - rnbatch
+      - web
+      - --port
+      - "8766"
+      - --db
+      - /data/users.sqlite3
+      - --origin
+      - ${APP_ORIGIN:-https://rnbatch.aibuild.work}
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    volumes:
+      - rnbatch-accounts:/data
+    expose:
+      - "8766"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 1g
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,urllib.request,urllib.parse; origin=os.environ.get('APP_ORIGIN','https://rnbatch.aibuild.work'); host=urllib.parse.urlsplit(origin).netloc; req=urllib.request.Request('http://127.0.0.1:8766/',headers={'Host':host}); assert urllib.request.urlopen(req,timeout=3).status==200"
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:-https://rnbatch.aibuild.work}
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # Cloudflare docs: TUNNEL_TOKEN is equivalent to --token.
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    network_mode: "service:rnbatch"
+    depends_on:
+      rnbatch:
+        condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  rnbatch-accounts:
