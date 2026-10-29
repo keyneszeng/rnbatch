@@ -208,5 +208,23 @@ class TestHttpWebWorkspaces(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 400)
 
 
+class TestBrowserFrontend(unittest.TestCase):
+    def test_embedded_javascript_syntax(self):
+        """Check the actual browser UI script in CI, not only Python routes."""
+        import re
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("Node.js unavailable")
+        html = (Path(__file__).resolve().parents[1] /
+                "src/rnbatch/web/index.html").read_text(encoding="utf-8")
+        scripts = re.findall(r"<script[^>]*>(.*?)</script>", html, re.DOTALL)
+        self.assertTrue(scripts)
+        for script in scripts:
+            p = subprocess.run(["node", "--check"], input=script,
+                               text=True, capture_output=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
