@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .web_auth import AuthStore, SESSION_SECONDS
+from .web_billing import BillingStore, QuotaExceeded
 from .web_workspace import MAX_FILE, WorkspaceStore
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -29,6 +30,7 @@ def make_handler(auth: AuthStore, store: WorkspaceStore, origin: str):
         raise ValueError("非本机的 Web App 必须使用 HTTPS")
     expected_host = parsed.netloc.lower()
     cookie_secure = parsed.scheme == "https"
+    billing = BillingStore(auth.path)
 
     class CloudHandler(BaseHTTPRequestHandler):
         server_version = "rnbatch-web/0.3"
@@ -139,6 +141,18 @@ def make_handler(auth: AuthStore, store: WorkspaceStore, origin: str):
                     body = body.replace("__USERNAME__", html.escape(sess.username, quote=True))
                 self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
                 return
+            if route.path in ("/api/billing/status", "/api/billing/catalog",
+                              "/api/billing/orders"):
+                sess = self._auth()
+                if not sess:
+                    return
+                if route.path == "/api/billing/status":
+                    self._json(200, billing.status(sess.user_id))
+                elif route.path == "/api/billing/catalog":
+                    self._json(200, {"ok": True, **billing.catalog()})
+                else:
+                    self._json(200, {"ok": True, "orders": billing.orders(sess.user_id)})
+                return
             if route.path == "/api/workspaces/download":
                 sess = self._auth()
                 if not sess:
@@ -202,6 +216,13 @@ def make_handler(auth: AuthStore, store: WorkspaceStore, origin: str):
                 self._json(200, {"ok": True},
                            {"Set-Cookie": self._cookie("", 0)})
                 return
+            if route == "/api/billing/orders":
+                try:
+                    data = self._read_json()
+                    self._json(200, billing.create_order(sess.user_id, data.get("sku")))
+                except ValueError as e:
+                    self._json(400, {"ok": False, "error": str(e)})
+                return
             if route == "/api/workspaces/upload":
                 qs = parse_qs(urlparse(self.path).query)
                 wid = (qs.get("workspace") or [""])[0]
@@ -237,10 +258,35 @@ def make_handler(auth: AuthStore, store: WorkspaceStore, origin: str):
                     if route == "/api/workspaces/preview":
                         result = store.preview(wid, data)
                     elif route == "/api/workspaces/apply":
-                        result = store.apply(wid, data.get("plan_token"))
+                        # Hold the workspace lock across quota reservation and rename:
+                        # two requests for the same plan cannot both charge/execute.
+                        w = store.get(wid, owner=sess.user_id)
+                        with w.lock:
+                            p = w.proposed
+                            token = data.get("plan_token")
+                            if w.applied or not p or not isinstance(token, str) or not hmac.compare_digest(
+                                p["token"], token
+                            ):
+                                raise ValueError("缺少有效预览确认，请重新预览")
+                            count = sum(a != b for a, b in p["pairs"])
+                            if count == 0:
+                                result = store.apply(wid, token)
+                                result["billing"] = {"free_units": 0, "paid_units": 0}
+                            else:
+                                usage = billing.reserve(sess.user_id, wid, count)
+                                try:
+                                    result = store.apply(wid, token)
+                                except Exception:
+                                    billing.release(sess.user_id, wid)
+                                    raise
+                                billing.settle(sess.user_id, wid)
+                                result["billing"] = usage
                     else:
                         result = calls[route](wid)
                 self._json(200, result)
+            except QuotaExceeded as e:
+                self._json(402, {"ok": False, "error": str(e),
+                                 "code": "quota_exceeded"})
             except (ValueError, OSError) as e:
                 self._json(400, {"ok": False, "error": str(e)})
 
