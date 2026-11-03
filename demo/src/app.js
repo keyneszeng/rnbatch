@@ -182,10 +182,24 @@ async function readPdf(file) {
     let text = '';
     for (let pageNum = 1; pageNum <= Math.min(doc.numPages, MAX_PDF_PAGES); pageNum++) {
       const page = await doc.getPage(pageNum);
-      const result = await page.getTextContent();
-      const line = result.items.map(item =>
-        typeof item.str === 'string' ? item.str + (item.hasEOL ? '\n' : '') : ''
-      ).join('');
+      // Some released Safari/WebKit versions lack ReadableStream's async
+      // iterator, which PDF.js getTextContent() internally requires.
+      // Reading chunks with getReader() works in Safari and Chromium.
+      const reader = page.streamTextContent().getReader();
+      let line = '';
+      try {
+        while (true) {
+          const {value, done} = await reader.read();
+          if (done) break;
+          for (const item of value.items || []) {
+            if (typeof item.str !== 'string') continue;
+            if (text.length + line.length < 25000)
+              line += item.str + (item.hasEOL ? '\n' : '');
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
       text += line + '\n';
       page.cleanup();
       if (text.length >= 25000) break;
