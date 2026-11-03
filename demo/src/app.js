@@ -183,6 +183,7 @@ async function readPdf(file) {
     for (let pageNum = 1; pageNum <= Math.min(doc.numPages, MAX_PDF_PAGES); pageNum++) {
       const page = await doc.getPage(pageNum);
       const result = await page.getTextContent();
+      console.warn('PDF DEBUG', {name:file.name, bytes:file.size, pages:doc.numPages, page:pageNum, count:result.items.length, samples:result.items.slice(0,3).map(x=>x.str)});
       const line = result.items.map(item =>
         typeof item.str === 'string' ? item.str + (item.hasEOL ? '\n' : '') : ''
       ).join('');
