@@ -31,6 +31,7 @@ jobs:
         working-directory: demo
         env:
           LIVE_BASE: https://rnbatch.aibuild.work
+          REQUIRE_ADDITIVE: ${{ github.event_name == 'schedule' && '1' || '0' }}
         run: node tests/live-cloudflare.mjs
       - name: Save smoke diagnostics
         if: always()
