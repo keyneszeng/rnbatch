@@ -25,16 +25,16 @@
       <div class="privacy"><span aria-hidden="true">◈</span> 文件始终留在你的浏览器中处理，<strong>不上传服务器</strong>，不需要注册。</div>
     </div>
     <section class="panel" aria-labelledby="upload-title">
-      <div class="section-heading"><span class="step">01</span><div><h2 id="upload-title">添加文件</h2><p>支持批量文件、整个文件夹，也可以拖入文件</p></div><span class="counter" id="file-count">0 个文件</span></div>
+      <div class="section-heading"><span class="step">01</span><div><h2 id="upload-title">添加文件</h2><p>支持分批追加文件、选择整个文件夹或拖入文件</p></div><span class="counter" id="file-count">0 个文件</span></div>
       <div class="dropzone" id="dropzone">
         <div class="drop-icon" aria-hidden="true">⇧</div>
-        <strong>拖拽文件到这里，开始整理</strong>
-        <span>或使用下方按钮选择文件和文件夹</span>
+        <strong>拖拽文件到这里，可多次添加</strong>
+        <span>也可分多次选择文件，已有文件不会被覆盖</span>
         <div class="file-actions">
           <label class="btn btn-primary" for="files">选择文件<input type="file" multiple id="files"></label>
           <label class="btn btn-light" for="folder">选择文件夹<input type="file" webkitdirectory multiple id="folder"></label>
         </div>
-        <small>演示上限：80 个文件、总计 40 MB，浏览器本地处理</small>
+        <small>演示上限：累计 80 个文件、总计 40 MB；所有文件仅在浏览器本地处理</small>
       </div>
       <div class="file-list" id="file-list" aria-live="polite"></div>
     </section>
