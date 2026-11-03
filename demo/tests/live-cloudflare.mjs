@@ -71,6 +71,23 @@ try {
   assert.equal(strFromU8(unpack[names.find(x=>x.endsWith('.txt'))]),fixture.toString('utf8'));
   log('ZIP', names.join(', '));
 
+  // Detect whether the newest GitHub build has actually reached Cloudflare.
+  // A PR may test the older live release; only scheduled runs enforce this.
+  await page.locator('#reset').click();
+  await page.locator('#files').setInputFiles({
+    name:'first-batch.txt',mimeType:'text/plain',buffer:Buffer.from('a')
+  });
+  await page.locator('#files').setInputFiles({
+    name:'second-batch.txt',mimeType:'text/plain',buffer:Buffer.from('b')
+  });
+  const deployedAppend = (await page.locator('#file-count').textContent()) === '2 个文件';
+  log('Deployed incremental-import version',
+      deployedAppend ? 'New additive file picker is live' : 'Older replace-file picker is still live');
+  if (process.env.REQUIRE_ADDITIVE === '1') {
+    assert.ok(deployedAppend,
+      'Cloudflare site did not deploy the incremental-file import version from main');
+  }
+
   const nonStatic = net.filter(x=>!['GET','HEAD'].includes(x.method));
   assert.deepEqual(nonStatic,[],'页面向服务器发送了潜在的文件上传请求');
   assert.equal(errors.length,0,errors.join('; '));
