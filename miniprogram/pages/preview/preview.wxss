@@ -1,0 +1,7 @@
+.page {
+    padding-bottom: 300rpx;
+}
+
+.btn-ghost {
+    margin-top: 14rpx;
+}

@@ -1,0 +1,56 @@
+<view class="page">
+    <block wx:if="{{ready}}">
+        <view class="stat-row">
+            <view class="stat">
+                <text class="stat-num">{{count}}</text>
+                <text class="stat-label">个文件</text>
+            </view>
+            <view class="stat">
+                <text class="stat-num stat-num-blue">{{changed}}</text>
+                <text class="stat-label">将改名</text>
+            </view>
+            <view class="stat">
+                <text class="stat-num {{conflicts > 0 ? 'stat-num-warn' : ''}}">{{conflicts}}</text>
+                <text class="stat-label">冲突</text>
+            </view>
+        </view>
+
+        <view class="notice notice-error" wx:if="{{conflicts > 0}}">
+            有 {{conflicts}} 个目标名已被占用，执行会被拒绝。返回修改模板或关键词后再试。
+        </view>
+
+        <view class="notice" wx:elif="{{changed === 0}}">
+            所有文件名已经符合当前规则，不需要改动。
+        </view>
+
+        <view class="card">
+            <view class="card-head">
+                <text class="card-title">预览</text>
+                <text class="card-note">关键词「{{keyword}}」</text>
+            </view>
+            <view class="plan-row {{item.conflict ? 'plan-row-conflict' : ''}}" wx:for="{{rows}}" wx:key="index">
+                <text class="plan-index">{{item.index}}</text>
+                <view class="plan-body">
+                    <text class="plan-from">{{item.from}}</text>
+                    <text class="plan-to {{item.conflict ? 'plan-to-conflict' : ''}} {{item.same ? 'plan-same' : ''}}">{{item.to}}</text>
+                </view>
+                <text class="plan-tag" wx:if="{{item.conflict}}">冲突</text>
+            </view>
+        </view>
+
+        <view class="hint">执行只作用于服务端的临时副本，可随时撤销。</view>
+
+        <view class="bottom-bar">
+            <view class="btn-primary {{canApply ? '' : 'btn-off'}}" bindtap="applyPlan">
+                {{applying ? '正在执行…' : '确认执行'}}
+            </view>
+            <view class="btn-ghost" bindtap="goBack">返回修改</view>
+        </view>
+    </block>
+
+    <view class="empty" wx:else>
+        <text class="empty-title">预览已失效</text>
+        <text class="empty-desc">请返回上一页重新生成预览。</text>
+        <view class="btn-ghost" bindtap="goBack">返回</view>
+    </view>
+</view>

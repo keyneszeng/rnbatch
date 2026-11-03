@@ -1,0 +1,38 @@
+.quota-hint {
+    margin-top: 12rpx;
+    color: #2f5bc4;
+    font-size: 23rpx;
+}
+
+.action {
+    display: flex;
+    align-items: center;
+    padding: 26rpx 0;
+    border-top: 2rpx solid #f1f4f9;
+}
+
+.action:active {
+    background: #fafbfe;
+}
+
+.action-main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+}
+
+.action-title {
+    color: #22304a;
+    font-size: 28rpx;
+}
+
+.action-desc {
+    margin-top: 4rpx;
+    color: #97a2b1;
+    font-size: 22rpx;
+}
+
+.action-arrow {
+    color: #c3ccd8;
+    font-size: 34rpx;
+}

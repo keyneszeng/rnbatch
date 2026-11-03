@@ -1,0 +1,119 @@
+<view class="page">
+    <view class="hero">
+        <text class="hero-brand">rnbatch</text>
+        <text class="hero-sub">把一堆乱名字的文件，整理成一套规范名。你的原始文件不会被修改。</text>
+    </view>
+
+    <view class="quota">
+        <text class="quota-text">{{quotaText}}</text>
+    </view>
+
+    <view class="card">
+        <view class="card-head">
+            <text class="step">01</text>
+            <text class="card-title">选择文件</text>
+            <text class="card-note" wx:if="{{files.length > 0}}">{{fileCountText}}</text>
+        </view>
+
+        <view class="pick-row">
+            <view class="pick-btn" bindtap="pickFromChat">
+                <text class="pick-title">从聊天选</text>
+                <text class="pick-desc">微信里的文件</text>
+            </view>
+            <view class="pick-btn" bindtap="pickFromAlbum">
+                <text class="pick-title">从相册选</text>
+                <text class="pick-desc">照片与截图</text>
+            </view>
+        </view>
+
+        <view class="file-list" wx:if="{{files.length > 0}}">
+            <view class="file-item" wx:for="{{files}}" wx:key="key">
+                <view class="file-badge">{{item.badge}}</view>
+                <view class="file-main">
+                    <text class="file-name">{{item.name}}</text>
+                    <text class="file-meta">{{item.type}} · {{item.sizeText}}</text>
+                </view>
+                <view class="file-remove" data-key="{{item.key}}" bindtap="removeFile">删除</view>
+            </view>
+            <view class="file-more" bindtap="clearAll">清空全部</view>
+        </view>
+
+        <view class="empty" wx:else>
+            <text class="empty-title">还没有选择文件</text>
+            <text class="empty-desc">从微信聊天里选文件，或从相册选照片。</text>
+            <view class="demo-link" wx:if="{{demo}}" bindtap="loadDemoFiles">载入 6 个示例文件试试</view>
+        </view>
+    </view>
+
+    <view class="card">
+        <view class="card-head">
+            <text class="step">02</text>
+            <text class="card-title">关键词</text>
+            <text class="card-note">项目名 / 客户名</text>
+        </view>
+
+        <view class="kw-row">
+            <input
+                class="kw-input"
+                value="{{keyword}}"
+                placeholder="例如：星海中心"
+                placeholder-class="kw-placeholder"
+                confirm-type="done"
+                bindinput="onKeywordInput"
+            />
+            <view class="kw-scan {{scanning ? 'kw-scan-off' : ''}}" bindtap="scanKeywords">
+                {{scanning ? '识别中' : '从文件里找'}}
+            </view>
+        </view>
+
+        <view class="chips" wx:if="{{candidates.length > 0}}">
+            <view
+                class="chip {{item.kw === keyword ? 'chip-on' : ''}}"
+                wx:for="{{candidates}}"
+                wx:key="kw"
+                data-kw="{{item.kw}}"
+                bindtap="pickCandidate"
+            >
+                <text class="chip-text">{{item.kw}}</text>
+                <text class="chip-why">{{item.why}}</text>
+            </view>
+        </view>
+    </view>
+
+    <view class="card">
+        <view class="card-head">
+            <text class="step">03</text>
+            <text class="card-title">命名模板</text>
+        </view>
+
+        <view class="tpl-list">
+            <view
+                class="tpl {{item.key === templateKey ? 'tpl-on' : ''}}"
+                wx:for="{{templates}}"
+                wx:key="key"
+                data-key="{{item.key}}"
+                bindtap="pickTemplate"
+            >
+                <text class="tpl-sample">{{item.sample}}</text>
+                <text class="tpl-desc">{{item.desc}}</text>
+            </view>
+        </view>
+    </view>
+
+    <view class="footer">
+        <text class="footer-link" bindtap="openPrivacy">隐私说明</text>
+    </view>
+
+    <view class="bottom-bar">
+        <view class="btn-primary {{canPreview ? '' : 'btn-off'}}" bindtap="goPreview">
+            预览 {{files.length}} 个文件
+        </view>
+    </view>
+
+    <view class="mask" wx:if="{{busyText}}">
+        <view class="mask-box">
+            <view class="spinner"></view>
+            <text class="mask-text">{{busyText}}</text>
+        </view>
+    </view>
+</view>

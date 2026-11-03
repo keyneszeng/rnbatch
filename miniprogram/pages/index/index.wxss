@@ -1,0 +1,27 @@
+.kw-placeholder {
+    color: #aeb8c6;
+}
+
+.demo-link {
+    margin-top: 22rpx;
+    padding: 14rpx 28rpx;
+    border: 2rpx dashed #b9cdf5;
+    border-radius: 14rpx;
+    color: #2f5bc4;
+    font-size: 24rpx;
+}
+
+.demo-link:active {
+    background: #eef3fe;
+}
+
+.footer {
+    padding: 8rpx 0 24rpx;
+    text-align: center;
+}
+
+.footer-link {
+    color: #97a2b1;
+    font-size: 23rpx;
+    text-decoration: underline;
+}

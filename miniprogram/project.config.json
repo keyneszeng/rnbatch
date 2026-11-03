@@ -1,0 +1,24 @@
+{
+  "description": "rnbatch 微信小程序：从聊天或相册选文件，服务端批量改名后取回",
+  "packOptions": {
+    "ignore": [
+      {
+        "type": "folder",
+        "value": ".workbuddy"
+      }
+    ],
+    "include": []
+  },
+  "setting": {
+    "bundle": false,
+    "es6": true,
+    "enhance": true,
+    "minified": true,
+    "postcss": true,
+    "urlCheck": true
+  },
+  "compileType": "miniprogram",
+  "appid": "touristappid",
+  "projectname": "rnbatch-miniprogram",
+  "miniprogramRoot": "./"
+}

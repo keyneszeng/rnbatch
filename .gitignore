@@ -24,3 +24,7 @@ Thumbs.db
 
 # 本地运行产物
 .rnbatch/
+
+# 小程序开发工具本地配置
+miniprogram/.workbuddy/
+miniprogram/project.private.config.json

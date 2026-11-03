@@ -1,0 +1,24 @@
+.policy-item {
+    padding: 22rpx 0;
+    border-top: 2rpx solid #f1f4f9;
+}
+
+.policy-item:first-child {
+    padding-top: 0;
+    border-top: 0;
+}
+
+.policy-title {
+    display: block;
+    color: #22304a;
+    font-size: 28rpx;
+    font-weight: 600;
+}
+
+.policy-body {
+    display: block;
+    margin-top: 10rpx;
+    color: #6b7889;
+    font-size: 25rpx;
+    line-height: 1.7;
+}

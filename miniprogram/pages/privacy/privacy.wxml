@@ -1,0 +1,15 @@
+<view class="page">
+    <view class="hero">
+        <text class="hero-brand">隐私说明</text>
+        <text class="hero-sub">rnbatch 只处理你主动选择的文件，不扫描、不外传。</text>
+    </view>
+
+    <view class="card">
+        <view class="policy-item" wx:for="{{sections}}" wx:key="key">
+            <text class="policy-title">{{item.title}}</text>
+            <text class="policy-body">{{item.body}}</text>
+        </view>
+    </view>
+
+    <view class="hint">如对本说明有疑问，可通过小程序「意见反馈」联系我们。</view>
+</view>
