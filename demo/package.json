@@ -8,9 +8,11 @@
     "check": "node --check src/app.js"
   },
   "dependencies": {
-    "fflate": "0.8.2"
+    "fflate": "0.8.2",
+    "pdfjs-dist": "6.4.299"
   },
   "devDependencies": {
-    "esbuild": "0.25.12"
+    "esbuild": "0.25.12",
+    "pdf-lib": "1.17.1"
   }
 }
