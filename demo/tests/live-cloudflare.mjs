@@ -1,6 +1,6 @@
 // Live production smoke test: synthetic files only, no credentials or user data.
 // Runs in GitHub Actions on demand or after main pushes.
-import { chromium, devices } from 'playwright';
+import { chromium, firefox, devices } from 'playwright';
 import assert from 'node:assert/strict';
 import dns from 'node:dns/promises';
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -10,7 +10,10 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 const ROOT = process.env.LIVE_BASE || 'https://rnbatch.aibuild.work';
 const dest = process.env.LIVE_REPORT_DIR || '/tmp/rnbatch-live';
 const findings = [];
-const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+const browserName = process.env.LIVE_BROWSER || 'chromium';
+const browserType = ({chromium, firefox})[browserName];
+if (!browserType) throw Error('Unsupported LIVE_BROWSER');
+const browser = await browserType.launch({headless:true,...(browserType === chromium ? {args:['--no-sandbox']} : {})});
 function log(label, value) { findings.push({label, value}); console.log('CHECK', label, value); }
 mkdirSync(dest, {recursive: true});
 
@@ -125,7 +128,12 @@ try {
   log('Browser security','No POST requests, no uncaught JS errors');
 
   // Mobile viewport / overflow and core workflow.
-  const mobileCtx=await browser.newContext({...devices['iPhone 13'],acceptDownloads:true});
+  // Firefox supports touch viewport emulation but Playwright's isMobile flag
+  // is supported only by Chromium; do not confuse that with a real iOS test.
+  const mobileOptions = browserName === 'firefox'
+    ? {viewport:{width:390,height:844},hasTouch:true,deviceScaleFactor:3}
+    : devices['iPhone 13'];
+  const mobileCtx=await browser.newContext({...mobileOptions,acceptDownloads:true});
   const mobile=await mobileCtx.newPage();
   const mobileResp=await mobile.goto(ROOT+'/', {waitUntil:'domcontentloaded',timeout:20000});
   assert.equal(mobileResp?.status(),200);
@@ -138,11 +146,11 @@ try {
   log('Mobile smoke','375px responsive layout and preview successful');
   await mobileCtx.close();
   await ctx.close();
-  console.log('LIVE BLACKBOX PASS: '+findings.length+' checks');
+  console.log('LIVE BLACKBOX PASS: '+findings.length+' checks ['+browserName+']');
 } catch(e) {
   console.error('LIVE BLACKBOX FAILURE',e);
   process.exitCode=1;
 } finally {
-  writeFileSync(dest+'/result.json',JSON.stringify({url:ROOT,status:process.exitCode?'FAILED':'PASSED',findings},null,2));
+  writeFileSync(dest+'/result.json',JSON.stringify({url:ROOT,browser:browserName,status:process.exitCode?'FAILED':'PASSED',findings},null,2));
   await browser.close();
 }
