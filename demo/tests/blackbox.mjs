@@ -1,5 +1,5 @@
 import { chromium } from 'playwright';
-import { zipSync, strToU8 } from 'fflate';
+import { zipSync, unzipSync, strToU8 } from 'fflate';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 
