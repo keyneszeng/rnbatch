@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    # Daily at 10:17 Asia/Singapore (GitHub Actions scheduled runs may be delayed)
+    - cron: '17 2 * * *'
 
 permissions:
   contents: read
