@@ -40,7 +40,7 @@ jobs:
           DEMO_BROWSER: ${{ matrix.browser }}
         run: |
           set -euo pipefail
-          python3 -m http.server 4173 --directory demo/dist > /tmp/demo-server.log 2>&1 &
+          python3 demo/tests/pages_server.py > /tmp/demo-server.log 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           for i in {1..50}; do
