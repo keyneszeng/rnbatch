@@ -78,9 +78,16 @@ TXT / DOCX 文字提取、命名预览、下载并核验 ZIP、同名冲突阻�
 - 本方案与 `deploy/cloudflare` 下的 **Tunnel + Docker 方案** 独立，
   不需要运行后者；两种部署路线请勿混用。
 
-## 状态
+## 部署与验收状态（2026-11-03）
 
-仓库代码可以准备好静态网页和自动化构建，
-但创建 Cloudflare Pages 项目、设置 `aibuild.work` 的 DNS
-需要对相应 Cloudflare 账户具有授权的操作连接。
-在没有实际 Pages 部署结果之前，不声称网站已经上线。
+- 已通过 GitHub Actions 独立 Chromium 运行器验证 **https://rnbatch.aibuild.work/**：
+  DNS 可解析；HTTPS 首页、JavaScript、CSS 均返回 200。
+- 线上实际执行 TXT 关键词提取、双文件预览和 ZIP 下载，并校验 ZIP 内源文件内容；
+  375px 手机视口下基本操作通过，页面没有发出 POST 上传请求。
+- [线上运行记录 #41614332519](https://github.com/keyneszeng/rnbatch/actions/runs/41614332519)。
+- 新增 [线上检查工作流](../.github/workflows/live-cloudflare-smoke.yml)：支持手动执行、
+  GitHub PR/main push 触发，并约在新加坡时间每日 10:17 自动执行一次
+  （GitHub Actions 定时可能延迟；失败需要人工确认和修复）。
+- 线上可用不代表每次 GitHub 主分支更新都会立即发布；如 Cloudflare Git 集成未连接
+  或自动构建失败，请在 Cloudflare Pages 控制台核对部署与最新代码。
+- 这仍是浏览器端免费演示版，不是包含云端账号/持久化/高级 OCR 的完整后端服务。

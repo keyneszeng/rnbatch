@@ -1,5 +1,5 @@
 import { chromium } from 'playwright';
-import { zipSync, strToU8 } from 'fflate';
+import { zipSync, unzipSync, strToU8 } from 'fflate';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 
@@ -90,6 +90,60 @@ try {
   await page.getByText('已从 1 份文档读取正文',{exact:false}).waitFor();
   assert.ok((await page.locator('#suggestions').innerText()).includes('云端演示项目'));
   ok('Office DOCX 正文可在本地解压提取关键词');
+
+  await page.locator('#reset').click();
+  await page.locator('#files').setInputFiles([
+    {name:'一号.txt',mimeType:'text/plain',buffer:Buffer.from('one')}
+  ]);
+  await page.locator('#keyword').fill('追加验证');
+  await page.locator('#preview').click();
+  assert.equal(await page.locator('#download').isEnabled(),true);
+  await page.locator('#files').setInputFiles([
+    {name:'二号.txt',mimeType:'text/plain',buffer:Buffer.from('two')}
+  ]);
+  assert.equal(await page.locator('#file-count').textContent(),'2 个文件');
+  assert.equal(await page.locator('#download').isEnabled(),false);
+  assert.match(await page.locator('#file-list').innerText(),/一号.txt/);
+  assert.match(await page.locator('#file-list').innerText(),/二号.txt/);
+  ok('分批选择文件采用追加，不覆盖旧文件；旧预览自动失效');
+
+  await page.locator('#files').setInputFiles([
+    {name:'二号.txt',mimeType:'text/plain',buffer:Buffer.from('another')}
+  ]);
+  assert.equal(await page.locator('#file-count').textContent(),'2 个文件');
+  assert.match(await page.locator('#message').innerText(),/重复文件路径/);
+  ok('重复文件路径被拒绝，已选择的文件保持不变');
+
+  await page.locator('#template').selectOption('{kw}-{n:02}');
+  await page.locator('#keyword').fill('__proto__');
+  await page.locator('#preview').click();
+  const specialDownload=page.waitForEvent('download');
+  await page.locator('#download').click();
+  const special=await specialDownload;
+  const specialZip=unzipSync(new Uint8Array(await (await import('node:fs/promises')).readFile(await special.path())));
+  assert.equal(Object.keys(specialZip).length,2);
+  ok('特殊 JavaScript 对象关键字作为文件名前缀不会丢失 ZIP 文件');
+
+  await page.locator('#reset').click();
+  await page.locator('#files').setInputFiles(
+    Array.from({length:80},(_,i)=>({
+      name:'sample-'+i+'.txt',mimeType:'text/plain',buffer:Buffer.from('ok')
+    }))
+  );
+  assert.equal(await page.locator('#file-count').textContent(),'80 个文件');
+  await page.locator('#files').setInputFiles([
+    {name:'over-limit.txt',mimeType:'text/plain',buffer:Buffer.from('ok')}
+  ]);
+  assert.equal(await page.locator('#file-count').textContent(),'80 个文件');
+  assert.match(await page.locator('#message').innerText(),/最多处理 80 个文件/);
+  ok('累计 80 文件数量限制阻断追加且不会清空原有文件');
+
+  const keyboardReachable=await page.locator('#files').evaluate(el=>{
+    el.focus();
+    return document.activeElement===el && getComputedStyle(el).display!=='none';
+  });
+  assert.equal(keyboardReachable,true);
+  ok('文件选择控件可以获得键盘焦点');
 
   assert.equal(errors.length,0,errors.join('; '));
   ok('所有页面操作没有未捕获 JavaScript 异常');
