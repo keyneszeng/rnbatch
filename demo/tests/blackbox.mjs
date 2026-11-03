@@ -16,6 +16,7 @@ try {
   const errors = [];
   const requests = [];
   page.on('pageerror', e => errors.push(e.message));
+  page.on('console', m => { if (['warn','error'].includes(m.type())) console.log('BROWSER CONSOLE '+m.type()+': '+m.text()); });
   page.on('request', req => requests.push({method:req.method(),url:req.url()}));
   await page.goto(base+'/');
   assert.match(await page.title(), /rnbatch/);
@@ -158,7 +159,13 @@ try {
     name:'real-text.pdf',mimeType:'application/pdf',buffer:Buffer.from(pdfBytes)
   });
   await page.locator('#extract').click();
-  await page.getByText('已从 1 份文档读取正文',{exact:false}).waitFor({timeout:30000});
+  await page.waitForFunction(() => {
+    const message = document.getElementById('message')?.textContent || '';
+    return message.includes('已从 ') || message.includes('没有检测到可读取的文字') || message.includes('读取文字失败');
+  }, null, {timeout:30000});
+  const pdfStatus = await page.locator('#message').innerText();
+  console.log('PDF EXTRACT STATUS:', pdfStatus);
+  assert.match(pdfStatus, /已从 1 份文档读取正文/);
   const pdfSuggestions=await page.locator('#suggestions').innerText();
   assert.match(pdfSuggestions,/Blue Harbor Renovation/);
   ok('文字型 PDF 使用 PDF.js Worker 在本地读取项目名');
