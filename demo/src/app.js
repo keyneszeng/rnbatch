@@ -183,7 +183,6 @@ async function readPdf(file) {
     for (let pageNum = 1; pageNum <= Math.min(doc.numPages, MAX_PDF_PAGES); pageNum++) {
       const page = await doc.getPage(pageNum);
       const result = await page.getTextContent();
-      console.warn('PDF DEBUG', {name:file.name, bytes:file.size, pages:doc.numPages, page:pageNum, count:result.items.length, samples:result.items.slice(0,3).map(x=>x.str)});
       const line = result.items.map(item =>
         typeof item.str === 'string' ? item.str + (item.hasEOL ? '\n' : '') : ''
       ).join('');
@@ -193,9 +192,9 @@ async function readPdf(file) {
     }
     return text.slice(0, 25000);
   } finally {
-    // Release PDF worker resources; corrupt or encrypted PDFs may throw.
-    if (doc) await doc.destroy();
-    else await task.destroy();
+    // PDFDocumentLoadingTask.destroy() exists in PDF.js 6 and releases the
+    // document and worker. PDFDocumentProxy does not expose destroy().
+    await task.destroy();
   }
 }
 
