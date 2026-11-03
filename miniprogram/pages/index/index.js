@@ -218,13 +218,24 @@ Page({
     async loadDemoFiles() {
         if (this.data.busyText) return;
         await this.resetBatch();
-        const items = [];
-        for (let i = 0; i < DEMO_FILES.length; i += 1) {
-            items.push(toItem(DEMO_FILES[i]));
+        this.setData({ busyText: '正在载入示例' });
+        try {
+            // 必须走和真实文件相同的上传路径：演示模式的工作区状态由 api 层维护，
+            // 只 setData 而不 uploadFile，预览时工作区里会是空的。
+            await this.ensureWorkspace();
+            const items = [];
+            for (let i = 0; i < DEMO_FILES.length; i += 1) {
+                await api.uploadFile(this.workspace, DEMO_FILES[i]);
+                items.push(toItem(DEMO_FILES[i]));
+            }
+            this.setData({ files: items });
+            this.syncPreviewState();
+            wx.showToast({ title: '已载入示例文件', icon: 'none' });
+        } catch (e) {
+            wx.showToast({ title: e.message || '载入失败', icon: 'none' });
+        } finally {
+            this.setData({ busyText: '' });
         }
-        this.setData({ files: items });
-        this.syncPreviewState();
-        wx.showToast({ title: '已载入示例文件', icon: 'none' });
     },
 
     async removeFile(event) {
