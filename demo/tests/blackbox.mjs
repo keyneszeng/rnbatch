@@ -158,6 +158,9 @@ try {
   await page.locator('#files').setInputFiles({
     name:'real-text.pdf',mimeType:'application/pdf',buffer:Buffer.from(pdfBytes)
   });
+  console.log('PDF PRE-EXTRACT', 'pdfBytes='+pdfBytes.length,
+    'files='+await page.locator('#file-count').innerText(),
+    'message='+await page.locator('#message').innerText());
   await page.locator('#extract').click();
   await page.waitForFunction(() => {
     const message = document.getElementById('message')?.textContent || '';
