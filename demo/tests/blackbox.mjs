@@ -16,7 +16,7 @@ try {
   const errors = [];
   const requests = [];
   page.on('pageerror', e => errors.push(e.message));
-  page.on('console', m => { if (['warn','error'].includes(m.type())) console.log('BROWSER CONSOLE '+m.type()+': '+m.text()); });
+  page.on('console', m => { if (['warn','warning','error'].includes(m.type())) console.log('BROWSER CONSOLE '+m.type()+': '+m.text()); });
   page.on('request', req => requests.push({method:req.method(),url:req.url()}));
   await page.goto(base+'/');
   assert.match(await page.title(), /rnbatch/);
