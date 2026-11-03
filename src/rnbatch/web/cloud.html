@@ -29,6 +29,13 @@ padding:12px 15px;min-height:45px}.warning{font-size:12px;color:#97650f}
 <div class="row"><span class="muted">已登录：__USERNAME__</span><button id="logout">退出</button></div></header>
 <main class="wrap"><h1>让每份项目文件都有规范的名字</h1>
 <p class="muted">浏览器上传副本，提取文档关键词，预览后批量重命名，最后下载 ZIP；你的原始文件不会被直接修改。</p>
+<section class="card" aria-label="使用额度">
+<h2>使用额度与套餐</h2>
+<div class="meta" id="billing-summary" aria-live="polite">正在查询本月可用额度…</div>
+<div class="meta">每月免费提供 20 个成功改名文件额度；额度按成功执行改名的文件数量扣除。撤销不返还额度。预览、上传和下载不扣额度。</div>
+<div class="meta" id="billing-packages">规划套餐：¥9.9 / 100 个文件；¥39 / 500 个文件。专业版 ¥29/月 仍在规划中。</div>
+<div class="warning">支付功能尚未开放，本站不会要求你转账。价格仅供产品测试，正式收费前另行公布。</div>
+</section>
 <section class="card"><h2><span class="step">01</span>上传文件</h2>
 <div class="row"><label class="pick">选择多个文件<input type="file" multiple id="files"></label>
 <label class="pick">选择文件夹<input type="file" webkitdirectory multiple id="folder"></label>
@@ -60,6 +67,14 @@ const CSRF="__CSRF__";
 const $=id=>document.getElementById(id);
 const S={id:"",plan:"",uploaded:false,applied:false};
 const notify=text=>{$("status").textContent=text;};
+async function refreshBilling(){
+  const res=await fetch("/api/billing/status",{credentials:"same-origin",cache:"no-store"});
+  if(!res.ok)throw Error("额度查询失败");
+  const info=await res.json();
+  $("billing-summary").textContent="本月免费剩余："+info.free_remaining+"/"+info.free_limit+
+    " 个 · 已购买剩余额度："+info.paid_balance+" 个 · 合计可用："+info.available+" 个";
+}
+refreshBilling().catch(()=>{$("billing-summary").textContent="额度暂时无法查询，请刷新页面重试。";});
 async function api(route,data){
   const res=await fetch(route,{method:"POST",credentials:"same-origin",
     headers:{"Content-Type":"application/json","X-RNBatch-CSRF":CSRF},
@@ -155,7 +170,10 @@ $("apply").onclick=async()=>{
     const result=await api("/api/workspaces/apply",{workspace:S.id,plan_token:S.plan});
     S.applied=true;S.plan="";$("download").disabled=false;$("undo").disabled=false;
     toggle(false);
-    notify("已整理 "+result.renamed+" 个文件，请下载 ZIP。");
+    notify("已整理 "+result.renamed+" 个文件，请下载 ZIP。"+
+           " 本次使用免费额度 "+(result.billing?.free_units||0)+
+           " 个、已购额度 "+(result.billing?.paid_units||0)+" 个。");
+    refreshBilling().catch(()=>{});
   }catch(e){notify("执行失败："+e.message);}
 };
 $("undo").onclick=async()=>{
@@ -164,7 +182,8 @@ $("undo").onclick=async()=>{
     $("undo").disabled=result.skipped===0; S.applied=result.skipped>0;
     $("download").disabled=false;clearPlan();
     if(!S.applied)toggle(true);
-    notify("恢复 "+result.restored+" 个文件，跳过 "+result.skipped+" 个。");
+    notify("恢复 "+result.restored+" 个文件，跳过 "+result.skipped+
+           " 个。已结算的改名额度不会因撤销返还。");
   }catch(e){notify("撤销失败："+e.message);}
 };
 $("download").onclick=()=>{
