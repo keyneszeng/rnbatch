@@ -8,8 +8,13 @@ on:
 
 jobs:
   pages-browser-test:
+    name: Browser demo (${{ matrix.browser }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, webkit]
     permissions:
       contents: read
     steps:
@@ -28,9 +33,11 @@ jobs:
         run: npm install --no-save --no-package-lock playwright@1.56.1
       - name: Install headless Chromium
         working-directory: demo
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps ${{ matrix.browser }}
       - name: Browser black-box test on static Pages output
         shell: bash
+        env:
+          DEMO_BROWSER: ${{ matrix.browser }}
         run: |
           set -euo pipefail
           python3 -m http.server 4173 --directory demo/dist > /tmp/demo-server.log 2>&1 &
