@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        browser: [chromium, webkit]
+        browser: [chromium, firefox, webkit]
     permissions:
       contents: read
     steps:
@@ -31,7 +31,7 @@ jobs:
       - name: Install browser test runner
         working-directory: demo
         run: npm install --no-save --no-package-lock playwright@1.56.1
-      - name: Install headless Chromium
+      - name: Install headless browser
         working-directory: demo
         run: npx playwright install --with-deps ${{ matrix.browser }}
       - name: Browser black-box test on static Pages output
