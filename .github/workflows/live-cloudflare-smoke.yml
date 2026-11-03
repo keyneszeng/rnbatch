@@ -14,23 +14,29 @@ permissions:
 
 jobs:
   live-browser:
+    name: Live site (${{ matrix.browser }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install deps and headless Chromium
+      - name: Install deps and browser
         working-directory: demo
         run: |
           npm install --no-audit --no-fund
           npm install --no-save --no-package-lock playwright@1.56.1
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps ${{ matrix.browser }}
       - name: Verify actual https://rnbatch.aibuild.work UI
         working-directory: demo
         env:
           LIVE_BASE: https://rnbatch.aibuild.work
+          LIVE_BROWSER: ${{ matrix.browser }}
           REQUIRE_ADDITIVE: ${{ github.event_name == 'schedule' && '1' || '0' }}
           REQUIRE_PDF: ${{ github.event_name == 'schedule' && '1' || '0' }}
         run: node tests/live-cloudflare.mjs
@@ -38,7 +44,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: live-cloudflare-diagnostics
+          name: live-cloudflare-diagnostics-${{ matrix.browser }}
           path: /tmp/rnbatch-live/result.json
           if-no-files-found: ignore
           retention-days: 7
