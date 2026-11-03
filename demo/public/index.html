@@ -39,10 +39,10 @@
       <div class="file-list" id="file-list" aria-live="polite"></div>
     </section>
     <section class="panel" aria-labelledby="keyword-title">
-      <div class="section-heading"><span class="step">02</span><div><h2 id="keyword-title">提取关键词</h2><p>从文档正文寻找项目名，也可以自己输入</p></div></div>
+      <div class="section-heading"><span class="step">02</span><div><h2 id="keyword-title">提取关键词</h2><p>支持 PDF、Office 与文本正文提取，也可以自行输入</p></div></div>
       <div class="keyword-row"><input id="keyword" type="text" maxlength="50" placeholder="例如：星海中心" aria-label="命名关键词"><button class="btn btn-light" id="extract" disabled>从正文提取</button></div>
       <div class="suggestions" id="suggestions"></div>
-      <p class="tip">可读取 TXT / MD / CSV / JSON、DOCX / PPTX / XLSX 的文本内容。PDF、扫描件及图片请手动填写关键词。</p>
+      <p class="tip">可在浏览器本地读取 PDF（前 12 页、最多 8 MB）、TXT / MD / CSV / JSON、DOCX / PPTX / XLSX。扫描版 PDF、图片和加密文件暂不支持 OCR，请手动输入关键词。</p>
     </section>
     <section class="panel" aria-labelledby="preview-title">
       <div class="section-heading"><span class="step">03</span><div><h2 id="preview-title">选择规则，预览改名</h2><p>执行之前，先检查每一项结果</p></div></div>
