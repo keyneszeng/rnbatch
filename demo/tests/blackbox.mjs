@@ -1,11 +1,12 @@
-import { chromium, webkit } from 'playwright';
+import { chromium, firefox, webkit } from 'playwright';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { zipSync, unzipSync, strToU8 } from 'fflate';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 
 const base = process.env.DEMO_BASE || 'http://127.0.0.1:4173';
-const browserType = process.env.DEMO_BROWSER === 'webkit' ? webkit : chromium;
+const browserType = ({chromium, firefox, webkit})[process.env.DEMO_BROWSER || 'chromium'];
+if (!browserType) throw Error('Unsupported DEMO_BROWSER');
 const browser = await browserType.launch({headless:true,...(browserType === chromium ? {args:['--no-sandbox']} : {})});
 const checks = [];
 const ok = name => {checks.push(name);console.log('PASS '+name);};
