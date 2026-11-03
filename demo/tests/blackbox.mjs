@@ -22,6 +22,10 @@ try {
   assert.match(await page.title(), /rnbatch/);
   assert.equal(await page.locator('input[type=file]').count(),2);
   ok('Cloudflare Pages 静态页面无需 Python 服务可打开');
+  const csp=(await page.request.get(base+'/')).headers()['content-security-policy'] || '';
+  assert.match(csp,/connect-src 'none'/);
+  assert.match(csp,/worker-src 'self'/);
+  ok('Cloudflare _headers CSP 已在真实测试服务器上强制生效');
 
   const txt = Buffer.from('会议主题：星海中心项目\n项目名称：星海中心\n测试原文内容不会离开本机','utf8');
   await page.locator('#files').setInputFiles([
