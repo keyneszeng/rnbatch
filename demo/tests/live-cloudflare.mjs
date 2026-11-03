@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import dns from 'node:dns/promises';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { zipSync, strToU8, unzipSync, strFromU8 } from 'fflate';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 
 const ROOT = process.env.LIVE_BASE || 'https://rnbatch.aibuild.work';
 const dest = process.env.LIVE_REPORT_DIR || '/tmp/rnbatch-live';
@@ -86,6 +87,36 @@ try {
   if (process.env.REQUIRE_ADDITIVE === '1') {
     assert.ok(deployedAppend,
       'Cloudflare site did not deploy the incremental-file import version from main');
+  }
+
+  // Live feature gate: PR runs may hit the previous Cloudflare release
+  // before Pages finishes deployment. Nightly runs require new PDF support.
+  const pdfAsset = await page.request.get(ROOT+'/pdf.worker.min.mjs');
+  const pdfDeployed = pdfAsset.ok() &&
+    /javascript/i.test(pdfAsset.headers()['content-type'] || '');
+  log('PDF parser worker deployment',
+    pdfDeployed ? 'matching PDF worker served from Cloudflare' :
+      'PDF worker not yet deployed, HTTP '+pdfAsset.status());
+  if (process.env.REQUIRE_PDF === '1')
+    assert.ok(pdfDeployed,'Cloudflare Pages has not deployed pdf.worker.min.mjs');
+  if (pdfDeployed) {
+    const pdf = await PDFDocument.create();
+    const pdfPage = pdf.addPage([612,792]);
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    pdfPage.drawText('Project: Riverfront Renewal', {x:40,y:730,font,size:15});
+    await page.locator('#reset').click();
+    await page.locator('#files').setInputFiles({
+      name:'live-extract.pdf',mimeType:'application/pdf',buffer:Buffer.from(await pdf.save())
+    });
+    await page.locator('#extract').click();
+    await page.waitForFunction(()=>{
+      const value=document.querySelector('#message')?.textContent||'';
+      return /已从 1 份文档读取正文|没有检测到可读取的文字|读取文字失败/.test(value);
+    },null,{timeout:30000});
+    const pdfMessage=await page.locator('#message').innerText();
+    assert.match(pdfMessage,/已从 1 份文档读取正文/);
+    assert.match(await page.locator('#suggestions').innerText(),/Riverfront Renewal/);
+    log('Live PDF text extraction','Success: Riverfront Renewal');
   }
 
   const nonStatic = net.filter(x=>!['GET','HEAD'].includes(x.method));

@@ -4,6 +4,8 @@ const MAX_FILES = 80;
 const MAX_TOTAL = 40 * 1024 * 1024;
 const MAX_SINGLE = 20 * 1024 * 1024;
 const MAX_OFFICE = 5 * 1024 * 1024;
+const MAX_PDF = 8 * 1024 * 1024;
+const MAX_PDF_PAGES = 12;
 const $ = id => document.getElementById(id);
 
 let items = [];
@@ -161,10 +163,60 @@ function xmlText(bytes, tagNames) {
   }
   return parts.join(' ').slice(0, 12000);
 }
+// The PDF parser is lazy-loaded only when a PDF is selected, keeping the
+// initial Cloudflare Pages load lightweight. The matching worker is served
+// from the same origin; file bytes never leave this browser tab.
+async function readPdf(file) {
+  if (file.size > MAX_PDF) return '';
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+  const task = pdfjs.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+    isEvalSupported: false,
+    stopAtErrors: false,
+    useSystemFonts: true
+  });
+  let doc;
+  try {
+    doc = await task.promise;
+    let text = '';
+    for (let pageNum = 1; pageNum <= Math.min(doc.numPages, MAX_PDF_PAGES); pageNum++) {
+      const page = await doc.getPage(pageNum);
+      // Some released Safari/WebKit versions lack ReadableStream's async
+      // iterator, which PDF.js getTextContent() internally requires.
+      // Reading chunks with getReader() works in Safari and Chromium.
+      const reader = page.streamTextContent().getReader();
+      let line = '';
+      try {
+        while (true) {
+          const {value, done} = await reader.read();
+          if (done) break;
+          for (const item of value.items || []) {
+            if (typeof item.str !== 'string') continue;
+            if (text.length + line.length < 25000)
+              line += item.str + (item.hasEOL ? '\n' : '');
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      text += line + '\n';
+      page.cleanup();
+      if (text.length >= 25000) break;
+    }
+    return text.slice(0, 25000);
+  } finally {
+    // PDFDocumentLoadingTask.destroy() exists in PDF.js 6 and releases the
+    // document and worker. PDFDocumentProxy does not expose destroy().
+    await task.destroy();
+  }
+}
+
 async function readDocument(file) {
   const ext = fileSuffix(file.name).toLowerCase();
   if (['.txt','.md','.csv','.json'].includes(ext))
     return (await file.text()).slice(0, 20000);
+  if (ext === '.pdf') return readPdf(file);
   if (!['.docx','.pptx','.xlsx'].includes(ext)) return '';
   if (file.size > MAX_OFFICE) return '';
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -195,7 +247,7 @@ function findCandidates(text) {
   matches.slice(0, 8).forEach(add);
   for (const line of text.split(/[\n\r]/).slice(0, 12)) {
     const split = line.split(/[：:]/);
-    if (split.length > 1 && /项目|主题|名称|会议|工程|活动/.test(split[0])) add(split[1].slice(0,32));
+    if (split.length > 1 && /项目|主题|名称|会议|工程|活动|project|meeting|title/i.test(split[0])) add(split[1].slice(0,32));
   }
   return found.slice(0, 8);
 }
@@ -205,9 +257,18 @@ $('extract').addEventListener('click', async () => {
   try {
     let text = '';
     let sources = 0;
+    let skipped = 0;
     for (const item of items.slice(0, 16)) {
-      const value = await readDocument(item.file);
-      if (value.trim()) { text += '\n' + value; sources++; }
+      try {
+        const value = await readDocument(item.file);
+        if (value.trim()) { text += '\n' + value; sources++; }
+        else skipped++;
+      } catch (err) {
+        // One malformed/encrypted document must not prevent extracting
+        // information from the remaining valid documents.
+        skipped++;
+        console.warn('文档无法提取正文：', item.path, err?.message || '解析失败');
+      }
       if (text.length > 30000) break;
     }
     suggestions = findCandidates(text);
@@ -224,8 +285,9 @@ $('extract').addEventListener('click', async () => {
       $('keyword').value = suggestions[0];
       invalidate();
     }
-    status(sources ? '已从 ' + sources + ' 份文档读取正文，推荐 ' + suggestions.length + ' 个关键词。' :
-      '没有检测到可读取的文字，请手动输入项目关键词。');
+    const note = skipped ? '（另有 ' + skipped + ' 份文件未提取到文字）' : '';
+    status(sources ? '已从 ' + sources + ' 份文档读取正文，推荐 ' + suggestions.length + ' 个关键词。' + note :
+      '没有检测到可读取的文字。扫描件、图片或加密 PDF 仍需手动输入关键词。');
   } catch (e) { status('读取文字失败：' + e.message + '。可以手动输入关键词。', true); }
   finally { $('extract').disabled = false; }
 });
