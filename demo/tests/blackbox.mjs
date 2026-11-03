@@ -1,10 +1,12 @@
-import { chromium } from 'playwright';
+import { chromium, webkit } from 'playwright';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { zipSync, unzipSync, strToU8 } from 'fflate';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 
 const base = process.env.DEMO_BASE || 'http://127.0.0.1:4173';
-const browser = await chromium.launch({headless:true,args:['--no-sandbox']});
+const browserType = process.env.DEMO_BROWSER === 'webkit' ? webkit : chromium;
+const browser = await browserType.launch({headless:true,...(browserType === chromium ? {args:['--no-sandbox']} : {})});
 const checks = [];
 const ok = name => {checks.push(name);console.log('PASS '+name);};
 
@@ -145,13 +147,85 @@ try {
   assert.equal(keyboardReachable,true);
   ok('文件选择控件可以获得键盘焦点');
 
+  // True browser PDF extraction: a real document encoded by pdf-lib.
+  await page.locator('#reset').click();
+  const pdf = await PDFDocument.create();
+  const pdfPage = pdf.addPage([612,792]);
+  const pdfFont = await pdf.embedFont(StandardFonts.Helvetica);
+  pdfPage.drawText('Project: Blue Harbor Renovation', {x:48,y:730,size:16,font:pdfFont});
+  const pdfBytes = await pdf.save();
+  await page.locator('#files').setInputFiles({
+    name:'real-text.pdf',mimeType:'application/pdf',buffer:Buffer.from(pdfBytes)
+  });
+  await page.locator('#extract').click();
+  await page.getByText('已从 1 份文档读取正文',{exact:false}).waitFor({timeout:30000});
+  const pdfSuggestions=await page.locator('#suggestions').innerText();
+  assert.match(pdfSuggestions,/Blue Harbor Renovation/);
+  ok('文字型 PDF 使用 PDF.js Worker 在本地读取项目名');
+
+  await page.locator('#reset').click();
+  const emptyPdf = await PDFDocument.create();
+  emptyPdf.addPage([612,792]);
+  await page.locator('#files').setInputFiles({
+    name:'scanned-with-no-text-layer.pdf',mimeType:'application/pdf',
+    buffer:Buffer.from(await emptyPdf.save())
+  });
+  await page.locator('#extract').click();
+  await page.getByText('没有检测到可读取的文字',{exact:false}).waitFor({timeout:30000});
+  assert.equal(await page.locator('#suggestions button').count(),0);
+  ok('扫描/无文字层 PDF 显示清晰降级提示，不假装 OCR 成功');
+
+  await page.locator('#reset').click();
+  const pptx=zipSync({
+    '[Content_Types].xml':strToU8('<?xml version="1.0"?><Types/>'),
+    'ppt/slides/slide1.xml':strToU8('<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>海湾物流中心项目</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>')
+  },{level:0});
+  await page.locator('#files').setInputFiles({
+    name:'planning.pptx',mimeType:'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    buffer:Buffer.from(pptx)
+  });
+  await page.locator('#extract').click();
+  await page.getByText('已从 1 份文档读取正文',{exact:false}).waitFor();
+  assert.match(await page.locator('#suggestions').innerText(),/海湾物流中心项目/);
+  ok('PPTX 演示文稿文本可从 OOXML 提取');
+
+  await page.locator('#reset').click();
+  const xlsx=zipSync({
+    '[Content_Types].xml':strToU8('<?xml version="1.0"?><Types/>'),
+    'xl/sharedStrings.xml':strToU8('<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>西湖年度会议</t></si></sst>')
+  },{level:0});
+  await page.locator('#files').setInputFiles({
+    name:'meeting.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    buffer:Buffer.from(xlsx)
+  });
+  await page.locator('#extract').click();
+  await page.getByText('已从 1 份文档读取正文',{exact:false}).waitFor();
+  assert.match(await page.locator('#suggestions').innerText(),/西湖年度会议/);
+  ok('XLSX 表格共享字符串可从 OOXML 提取');
+
+  await page.locator('#reset').click();
+  const largeBytes=Buffer.alloc(12*1024*1024,0x4b);
+  await page.locator('#files').setInputFiles({
+    name:'12MB-test.bin',mimeType:'application/octet-stream',buffer:largeBytes
+  });
+  await page.locator('#keyword').fill('大文件');
+  await page.locator('#preview').click();
+  const largeDownloadP=page.waitForEvent('download',{timeout:30000});
+  const start=Date.now();
+  await page.locator('#download').click();
+  const largeDownload=await largeDownloadP;
+  const largeBuf=await (await import('node:fs/promises')).readFile(await largeDownload.path());
+  const largeZip=unzipSync(new Uint8Array(largeBuf));
+  assert.equal(Object.values(largeZip)[0].length,largeBytes.length);
+  ok('12MB 文件下载与内容长度一致，用时 '+(Date.now()-start)+'ms');
+
   assert.equal(errors.length,0,errors.join('; '));
   ok('所有页面操作没有未捕获 JavaScript 异常');
   assert.equal(requests.filter(req=>req.method!=='GET').length,0);
   assert.ok(requests.every(req=>req.url.startsWith(base)));
   ok('没有 POST 上传请求与外部网络请求');
 
-  console.log('BROWSER DEMO PASS '+checks.length+'/'+checks.length);
+  console.log('BROWSER DEMO PASS '+checks.length+'/'+checks.length+' ['+(process.env.DEMO_BROWSER||'chromium')+']');
   await context.close();
 } catch(e) {
   console.error('BROWSER DEMO FAILED',e);
