@@ -97,26 +97,37 @@ function loadFiles(list) {
   try {
     const files = Array.from(list || []);
     if (!files.length) return;
-    if (files.length > MAX_FILES) throw Error('演示版最多处理 ' + MAX_FILES + ' 个文件');
-    const total = files.reduce((sum, f) => sum + f.size, 0);
-    if (total > MAX_TOTAL || files.some(f => f.size > MAX_SINGLE))
+    if (items.length + files.length > MAX_FILES)
+      throw Error('演示版最多处理 ' + MAX_FILES + ' 个文件');
+    const total = [...items.map(item => item.file), ...files]
+      .reduce((sum, file) => sum + file.size, 0);
+    if (total > MAX_TOTAL || files.some(file => file.size > MAX_SINGLE))
       throw Error('超出文件容量：总量不超过 40 MB，单文件不超过 20 MB');
-    const seen = new Set();
+    const seen = new Set(items.map(item => item.path.normalize('NFC').toLocaleLowerCase()));
     const next = files.map(file => {
       const path = pathOf(file);
-      if (seen.has(path.toLocaleLowerCase())) throw Error('存在重复文件路径：' + path);
-      seen.add(path.toLocaleLowerCase());
+      const key = path.normalize('NFC').toLocaleLowerCase();
+      if (seen.has(key)) throw Error('存在重复文件路径：' + path);
+      seen.add(key);
       return { file, path };
     });
-    items = next;
+    // Atomic add: any duplicate/limit error leaves the existing work intact.
+    items = [...items, ...next];
     suggestions = [];
     $('suggestions').replaceChildren();
     $('extract').disabled = false;
     $('reset').disabled = false;
     addFileChips();
     invalidate();
-    status('已载入 ' + files.length + ' 个文件（' + formatBytes(total) + '），文件没有上传至云端。');
+    status('本次添加 ' + files.length + ' 个文件，当前共 ' + items.length +
+      ' 个（' + formatBytes(total) + '）。文件仅在浏览器本地处理。');
   } catch (e) { status('选择文件失败：' + e.message, true); }
+  finally {
+    // Allow choosing the same file again so duplicate validation is explicit,
+    // rather than silently missing a browser change event.
+    $('files').value = '';
+    $('folder').value = '';
+  }
 }
 
 $('files').addEventListener('change', e => loadFiles(e.target.files));
@@ -275,14 +286,17 @@ $('preview').addEventListener('click', () => {
 });
 $('download').addEventListener('click', async () => {
   if (!plan || plan.some(p => p.conflict)) return;
+  const currentPlan = plan;
   const button = $('download');
   button.disabled = true;
   status('正在本地生成 ZIP 文件，请不要关闭页面…');
   try {
-    const parts = {};
-    for (const [index,item] of plan.entries()) {
+    // Null-prototype dictionary makes special filenames such as
+    // "constructor" and "__proto__" unambiguous ZIP entry names.
+    const parts = Object.create(null);
+    for (const [index,item] of currentPlan.entries()) {
       parts[item.output] = new Uint8Array(await item.file.arrayBuffer());
-      status('正在打包 ' + (index+1) + ' / ' + plan.length + '：' + item.path);
+      status('正在打包 ' + (index+1) + ' / ' + currentPlan.length + '：' + item.path);
     }
     // fflate creates standard UTF-8 ZIP entries. Level 0 avoids expensive
     // recompression of images/PDFs and keeps the free demo responsive.
@@ -295,7 +309,11 @@ $('download').addEventListener('click', async () => {
     setTimeout(() => URL.revokeObjectURL(url), 30000);
     status('ZIP 已生成并开始下载（' + formatBytes(blob.size) + '）。原始文件完全没有修改。');
   } catch(e) { status('ZIP 生成失败：' + e.message, true); }
-  finally { button.disabled = false; }
+  finally {
+    // A user can clear or replace the preview while files are being read.
+    // Never re-enable a download button against a stale rename plan.
+    button.disabled = currentPlan !== plan || currentPlan.some(p => p.conflict);
+  }
 });
 
 // There are intentionally no requests to any upload, authentication, or API
