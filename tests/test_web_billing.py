@@ -17,7 +17,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from rnbatch.web_auth import AuthStore
-from rnbatch.web_billing import BillingStore, FREE_FILES_PER_MONTH, QuotaExceeded
+from rnbatch.web_billing import (BillingStore, FREE_FILES_PER_MONTH,
+                                 QuotaExceeded, normalize_code)
 from rnbatch.web_cloud import make_handler
 from rnbatch.web_workspace import WorkspaceStore
 
@@ -140,6 +141,64 @@ class TestBillingLedger(unittest.TestCase):
         with patch.object(BillingStore, "_period", return_value="2030-01"):
             self.assertEqual(self.billing.status(self.alice)["free_remaining"], 20)
 
+    def test_gift_code_redeems_once_and_grants_membership(self):
+        codes = self.billing.create_gift_codes("member_monthly", 1, note="送朋友")
+        self.assertEqual(len(codes), 1)
+        code = codes[0]["code"]
+        self.assertEqual(len(code), 14)          # 12 位 + 2 个分隔符
+        self.assertFalse(self.billing.status(self.alice)["member"])
+
+        result = self.billing.redeem_gift(self.alice, code)
+        self.assertEqual((result["plan"], result["days"]), ("member_monthly", 30))
+        status = self.billing.status(self.alice)
+        self.assertTrue(status["member"])
+        self.assertTrue(status["unlimited"])
+
+        # 一码一用：别人不能再用，本人也不能重复用
+        with self.assertRaises(ValueError):
+            self.billing.redeem_gift(self.bob, code)
+        with self.assertRaises(ValueError):
+            self.billing.redeem_gift(self.alice, code)
+        self.assertFalse(self.billing.status(self.bob)["member"])
+
+    def test_gift_code_rejects_malformed_unknown_and_expired(self):
+        with self.assertRaises(ValueError):
+            self.billing.redeem_gift(self.alice, "SHORT")
+        # O 不在字母表里（生成时就排除了易混字符），不该被静默纠正
+        with self.assertRaises(ValueError):
+            self.billing.redeem_gift(self.alice, "OOOO-OOOO-OOOO")
+        with self.assertRaises(ValueError):
+            self.billing.redeem_gift(self.alice, "2222-2222-2222")
+
+        expired = self.billing.create_gift_codes("member_yearly", 1, expires_days=1)[0]["code"]
+        conn = sqlite3.connect(str(self.db))
+        try:
+            conn.execute("UPDATE billing_gift_codes SET expires_at=? WHERE code=?",
+                         (int(time.time()) - 60, normalize_code(expired)))
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(ValueError):
+            self.billing.redeem_gift(self.alice, expired)
+
+    def test_gift_code_stacks_on_existing_subscription(self):
+        first = self.billing.create_gift_codes("member_monthly")[0]["code"]
+        second = self.billing.create_gift_codes("member_monthly")[0]["code"]
+        a = self.billing.redeem_gift(self.alice, first)
+        b = self.billing.redeem_gift(self.alice, second)
+        self.assertEqual(b["expires_at"], a["expires_at"] + 30 * 86400)
+
+    def test_gift_code_creation_is_bounded_and_validated(self):
+        with self.assertRaises(ValueError):
+            self.billing.create_gift_codes("evil_sku")
+        with self.assertRaises(ValueError):
+            self.billing.create_gift_codes("member_monthly", 0)
+        with self.assertRaises(ValueError):
+            self.billing.create_gift_codes("member_monthly", 101)
+        with self.assertRaises(ValueError):
+            self.billing.create_gift_codes("member_monthly", 1, expires_days=-5)
+        self.assertEqual(len(self.billing.create_gift_codes("member_yearly", 3)), 3)
+
 
 class TestBillingRoutes(unittest.TestCase):
     def setUp(self):
@@ -218,6 +277,28 @@ class TestBillingRoutes(unittest.TestCase):
                       "/api/billing/grant", "/api/billing/admin"):
             status, _, _ = self.request(route, {"order":order["id"]},
                                          cookie=bob_cookie, csrf=bob_csrf)
+            self.assertEqual(status, 404, route)
+
+    def test_gift_redeem_route_requires_auth_csrf_and_has_no_create_endpoint(self):
+        code = BillingStore(self.auth.path).create_gift_codes("member_yearly")[0]["code"]
+        status, _, _ = self.request("/api/billing/redeem", {"code": code})
+        self.assertEqual(status, 401)
+        cookie, csrf = self.login("alice", "StrongPassword_2026!")
+        status, _, _ = self.request("/api/billing/redeem", {"code": code}, cookie=cookie)
+        self.assertEqual(status, 403)
+        status, result, _ = self.request("/api/billing/redeem", {"code": code},
+                                         cookie=cookie, csrf=csrf)
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result["plan"], "member_yearly")
+        status, data, _ = self.request("/api/billing/status", cookie=cookie)
+        self.assertTrue(data["member"])
+        self.assertTrue(data["unlimited"])
+
+        # 生成兑换码只能走服务端 CLI，不能有任何 HTTP 入口
+        for route in ("/api/billing/gift", "/api/billing/gift-create",
+                      "/api/billing/gifts", "/api/billing/redeem-code"):
+            status, _, _ = self.request(route, {"plan": "member_yearly"},
+                                        cookie=cookie, csrf=csrf)
             self.assertEqual(status, 404, route)
 
     def test_apply_requires_server_side_quota_and_failed_apply_does_not_charge(self):

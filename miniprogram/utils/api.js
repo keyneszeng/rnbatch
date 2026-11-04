@@ -106,6 +106,7 @@ function demo() {
             applied: false,
             plan: null,
             lastResult: null,
+            memberUntil: 0,
         };
     }
     return demoState;
@@ -253,16 +254,19 @@ function removeWorkspace(workspace) {
 
 function billingStatus() {
     if (config.DEMO) {
+        const now = Math.floor(Date.now() / 1000);
+        const until = demo().memberUntil;
+        const member = until > now;
         return Promise.resolve({
             ok: true,
             free_limit: 20,
             free_remaining: 20,
             free_used: 0,
-            member: false,
-            member_plan: null,
-            member_until: null,
-            unlimited: false,
-            available: 20,
+            member: member,
+            member_plan: member ? 'member_monthly' : null,
+            member_until: member ? until : null,
+            unlimited: member,
+            available: member ? null : 20,
         });
     }
     return request('/api/billing/status', {}, 'GET');
@@ -283,6 +287,28 @@ function catalog() {
         });
     }
     return request('/api/billing/catalog', {}, 'GET');
+}
+
+/**
+ * 兑换会员码。码由管理员在服务端生成，小程序这边只能核销，不能生成。
+ * 演示模式下按同样规则做本地模拟，让流程可点通。
+ */
+function redeemGift(code) {
+    const raw = String(code || '');
+    if (config.DEMO) {
+        const cleaned = raw.replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+        if (cleaned.length !== 12) {
+            return Promise.reject(new Error('兑换码应为 12 位'));
+        }
+        const state = demo();
+        const now = Math.floor(Date.now() / 1000);
+        const base = Math.max(now, state.memberUntil || 0);
+        state.memberUntil = base + 30 * 86400;
+        return Promise.resolve({
+            ok: true, plan: 'member_monthly', days: 30, expires_at: state.memberUntil,
+        });
+    }
+    return request('/api/billing/redeem', { code: raw });
 }
 
 /**
@@ -325,5 +351,6 @@ module.exports = {
     removeWorkspace: removeWorkspace,
     billingStatus: billingStatus,
     catalog: catalog,
+    redeemGift: redeemGift,
     downloadArchive: downloadArchive,
 };

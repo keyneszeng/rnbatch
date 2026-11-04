@@ -55,6 +55,26 @@ python -m rnbatch.web_billing --db /data/users.sqlite3 confirm-offline \
 
 此命令不会发起支付，也**没有**对应 HTTP 路由。支付凭据全局唯一、同一订单重复核销幂等，避免重复发放额度。不要将这些操作权限暴露给普通用户；严格保护数据库、后台 Shell 和备份。
 
+## 赠送兑换码（仅服务端）
+
+小程序主想把会员送给别人，微信里没有"转赠套餐"的能力，所以走**一次性兑换码**：
+服务端生成，把码发给对方，对方在小程序「会员 → 有兑换码？」里输入兑换。
+
+```bash
+# 生成 2 个年度会员码，备注给谁；码本身 7 天内有效（不填则一直有效）
+python -m rnbatch.web_billing --db /data/users.sqlite3 gift-create \
+  --plan member_yearly --count 2 --note "送朋友" --expires-days 7
+
+# 查看核销状态
+python -m rnbatch.web_billing --db /data/users.sqlite3 gift-list
+```
+
+- 码为 12 位，字母表去掉了 `0/O`、`1/I/L`、`U` 这些手抄易错的字符，展示成 `XXXX-XXXX-XXXX`。
+- **一码一用**：核销在 `BEGIN IMMEDIATE` 事务里用 `UPDATE ... WHERE redeemed_by IS NULL` 抢占，重复兑换直接报错。
+- 兑换后订阅**从现有到期时间往后延**，不是覆盖，所以送两个码就是叠加两段。
+- 兑换码可以设自身有效期；过期码在核销时报错，不会被静默接受。
+- **没有任何生成兑换码的 HTTP 入口**，`/api/billing/redeem` 只能核销。生成权限等同于数据库权限，只给运营者。
+
 ## 正式支付上线的未完成事项
 
 1. 注册合规商户并确定用户市场及适用的税务、退款、用户协议和隐私政策。

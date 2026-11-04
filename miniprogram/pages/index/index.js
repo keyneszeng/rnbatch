@@ -373,6 +373,45 @@ Page({
         wx.navigateTo({ url: '/pages/privacy/privacy' });
     },
 
+    /* ---------------------------------------------------------- 兑换码 */
+
+    redeemCode() {
+        const that = this;
+        wx.showModal({
+            title: '兑换会员',
+            editable: true,
+            placeholderText: 'XXXX-XXXX-XXXX',
+            confirmText: '兑换',
+            success: function (res) {
+                if (!res.confirm) return;
+                const code = String(res.content || '').trim();
+                if (!code) {
+                    wx.showToast({ title: '请输入兑换码', icon: 'none' });
+                    return;
+                }
+                that.doRedeem(code);
+            },
+        });
+    },
+
+    async doRedeem(code) {
+        wx.showLoading({ title: '兑换中', mask: true });
+        try {
+            const res = await api.redeemGift(code);
+            wx.hideLoading();
+            this.refreshQuota();
+            const name = res.plan === 'member_yearly' ? '年度会员' : '月度会员';
+            wx.showModal({
+                title: '兑换成功',
+                content: '已开通' + name + ' ' + res.days + ' 天，订阅期内不限改名次数。',
+                showCancel: false,
+            });
+        } catch (e) {
+            wx.hideLoading();
+            wx.showToast({ title: e.message || '兑换失败', icon: 'none' });
+        }
+    },
+
     /* ---------------------------------------------------------- 下一步 */
 
     async goPreview() {

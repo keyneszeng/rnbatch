@@ -110,6 +110,7 @@
             <text class="member-plan-price">{{item.priceText}}</text>
         </view>
         <view class="member-note" wx:if="{{!checkoutEnabled}}">支付通道接入中，暂未开放购买</view>
+        <view class="member-redeem" bindtap="redeemCode">有兑换码？点这里兑换</view>
     </view>
 
     <view class="footer">

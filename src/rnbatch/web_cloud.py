@@ -223,6 +223,15 @@ def make_handler(auth: AuthStore, store: WorkspaceStore, origin: str):
                 except ValueError as e:
                     self._json(400, {"ok": False, "error": str(e)})
                 return
+            if route == "/api/billing/redeem":
+                # 兑换码由管理员在服务端生成，这里只负责核销；
+                # 没有生成兑换码的 HTTP 入口。
+                try:
+                    data = self._read_json()
+                    self._json(200, billing.redeem_gift(sess.user_id, data.get("code")))
+                except ValueError as e:
+                    self._json(400, {"ok": False, "error": str(e)})
+                return
             if route == "/api/workspaces/upload":
                 qs = parse_qs(urlparse(self.path).query)
                 wid = (qs.get("workspace") or [""])[0]

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import secrets
 import sqlite3
 import threading
 import time
@@ -29,6 +30,28 @@ PLANS = {
     "member_monthly": {"title": "月度会员", "price_cents": 990, "days": 30},
     "member_yearly": {"title": "年度会员", "price_cents": 9900, "days": 365},
 }
+
+# 兑换码字母表：去掉 0/O、1/I/L、U 这些手抄容易看错的字符
+CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+CODE_LENGTH = 12
+CODE_GROUP = 4
+
+
+def format_code(code: str) -> str:
+    """数据库里不带分隔符，展示成 XXXX-XXXX-XXXX，方便手抄和口述。"""
+    return "-".join(code[i:i + CODE_GROUP] for i in range(0, len(code), CODE_GROUP))
+
+
+def normalize_code(raw: str) -> str:
+    """把用户输入的兑换码收敛成存储形态；非法字符直接报错，不静默丢弃。"""
+    if not isinstance(raw, str):
+        raise ValueError("兑换码格式不正确")
+    cleaned = re.sub(r"[^0-9A-Za-z]", "", raw).upper()
+    if len(cleaned) != CODE_LENGTH:
+        raise ValueError("兑换码应为 %d 位" % CODE_LENGTH)
+    if any(ch not in CODE_ALPHABET for ch in cleaned):
+        raise ValueError("兑换码包含无效字符")
+    return cleaned
 
 
 class QuotaExceeded(ValueError):
@@ -73,6 +96,18 @@ class BillingStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_billing_orders_user
                     ON billing_orders(user_id, created_at);
+                CREATE TABLE IF NOT EXISTS billing_gift_codes (
+                    code TEXT PRIMARY KEY,
+                    plan TEXT NOT NULL,
+                    days INTEGER NOT NULL CHECK(days > 0),
+                    note TEXT,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER,
+                    redeemed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+                    redeemed_at INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_gift_codes_redeemed
+                    ON billing_gift_codes(redeemed_by);
             """)
 
     @contextmanager
@@ -229,6 +264,27 @@ class BillingStore:
                 ORDER BY created_at DESC,id DESC LIMIT ?""", (user_id, limit)).fetchall()
         return [dict(row) for row in rows]
 
+    # ------------------------------------------------------------ 订阅延期
+    @staticmethod
+    def _extend_subscription(db, user_id: str, plan: str, days: int) -> int:
+        """把订阅到期时间往后延，返回新的到期时间（UTC 秒）。
+
+        续费从现有到期时间起算，不吞掉剩余天数；已过期则从当前时间起算。
+        """
+        now = int(time.time())
+        current = db.execute(
+            "SELECT expires_at FROM billing_subscriptions WHERE user_id=?",
+            (user_id,)).fetchone()
+        base = max(now, int(current[0])) if current else now
+        expires = base + days * 86400
+        db.execute("""INSERT INTO billing_subscriptions
+            (user_id,plan,expires_at,updated_at) VALUES (?,?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+            plan=excluded.plan, expires_at=excluded.expires_at,
+            updated_at=excluded.updated_at""",
+            (user_id, plan, expires, now))
+        return expires
+
     def fulfill_order(self, order_id: str, payment_reference: str) -> dict:
         """订单履约：把订阅到期时间往后延。
 
@@ -261,21 +317,71 @@ class BillingStore:
                 raise ValueError("订单状态已变化")
 
             days = int(row["days"])
-            now = int(time.time())
-            current = db.execute(
-                "SELECT expires_at FROM billing_subscriptions WHERE user_id=?",
-                (row["user_id"],)).fetchone()
-            # 续费从现有到期时间往后延，不吞掉剩余天数
-            base = max(now, int(current[0])) if current else now
-            expires = base + days * 86400
-            db.execute("""INSERT INTO billing_subscriptions
-                (user_id,plan,expires_at,updated_at) VALUES (?,?,?,?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                plan=excluded.plan, expires_at=excluded.expires_at,
-                updated_at=excluded.updated_at""",
-                (row["user_id"], row["sku"], expires, now))
+            expires = self._extend_subscription(db, row["user_id"], row["sku"], days)
         return {"ok": True, "already_fulfilled": False,
                 "plan": row["sku"], "days": days, "expires_at": expires}
+
+    # ------------------------------------------------------------ 赠送兑换码
+    def create_gift_codes(self, plan: str, count: int = 1, note: str = "",
+                          expires_days: int | None = None) -> list[dict]:
+        """生成赠送用的兑换码。只有服务端能调用（CLI），没有对应 HTTP 路由。"""
+        if plan not in PLANS:
+            raise ValueError("不存在该订阅套餐")
+        if type(count) is not int or not (1 <= count <= 100):
+            raise ValueError("一次最多生成 100 个兑换码")
+        if expires_days is not None and (type(expires_days) is not int or expires_days <= 0):
+            raise ValueError("兑换码有效期必须是正整数天")
+        days = PLANS[plan]["days"]
+        now = int(time.time())
+        expires_at = now + expires_days * 86400 if expires_days else None
+
+        out: list[dict] = []
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            while len(out) < count:
+                code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
+                try:
+                    db.execute("""INSERT INTO billing_gift_codes
+                        (code,plan,days,note,created_at,expires_at)
+                        VALUES (?,?,?,?,?,?)""",
+                        (code, plan, days, note or None, now, expires_at))
+                except sqlite3.IntegrityError:
+                    continue          # 撞码，换一个
+                out.append({"code": format_code(code), "plan": plan,
+                            "days": days, "expires_at": expires_at})
+        return out
+
+    def redeem_gift(self, user_id: str, raw_code: str) -> dict:
+        """兑换：核销一次性兑换码，并把订阅往后延。"""
+        code = normalize_code(raw_code)
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._assert_user(db, user_id)
+            row = db.execute("""SELECT plan,days,expires_at,redeemed_by
+                FROM billing_gift_codes WHERE code=?""", (code,)).fetchone()
+            if row is None:
+                raise ValueError("兑换码不存在")
+            if row["redeemed_by"]:
+                raise ValueError("这个兑换码已经被用过了")
+            if row["expires_at"] and int(row["expires_at"]) < int(time.time()):
+                raise ValueError("兑换码已过期")
+            cursor = db.execute("""UPDATE billing_gift_codes
+                SET redeemed_by=?, redeemed_at=?
+                WHERE code=? AND redeemed_by IS NULL""",
+                (user_id, int(time.time()), code))
+            if cursor.rowcount != 1:
+                raise ValueError("这个兑换码已经被用过了")
+            expires = self._extend_subscription(db, user_id, row["plan"], int(row["days"]))
+        return {"ok": True, "plan": row["plan"],
+                "days": int(row["days"]), "expires_at": expires}
+
+    def list_gift_codes(self, limit: int = 50) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute("""SELECT code,plan,days,note,created_at,expires_at,
+                       redeemed_by,redeemed_at
+                FROM billing_gift_codes ORDER BY created_at DESC LIMIT ?""",
+                (limit,)).fetchall()
+        return [dict(row) for row in rows]
 
     # 兼容旧调用点与 CLI 措辞
     confirm_offline = fulfill_order
@@ -289,13 +395,50 @@ def main(argv=None) -> int:
                              help="仅在人工独立核验真实到账后执行")
     confirm.add_argument("--order", required=True)
     confirm.add_argument("--payment-reference", required=True)
+
+    gift = sub.add_parser("gift-create", help="生成赠送用的会员兑换码")
+    gift.add_argument("--plan", required=True, choices=sorted(PLANS))
+    gift.add_argument("--count", type=int, default=1, help="生成数量，默认 1，最多 100")
+    gift.add_argument("--note", default="", help="备注，例如送给谁；仅内部可见")
+    gift.add_argument("--expires-days", type=int, default=None,
+                      help="兑换码自身的有效期（天），不填则一直有效")
+
+    listing = sub.add_parser("gift-list", help="查看兑换码与核销状态")
+    listing.add_argument("--limit", type=int, default=50)
+
     args = parser.parse_args(argv)
+    store = BillingStore(args.db)
+
     if args.cmd == "confirm-offline":
-        result = BillingStore(args.db).confirm_offline(
-            args.order, args.payment_reference)
+        result = store.confirm_offline(args.order, args.payment_reference)
         print("已履约；套餐:", result["plan"], "天数:", result["days"],
               " (已处理过)" if result["already_fulfilled"] else "")
         return 0
+
+    if args.cmd == "gift-create":
+        codes = store.create_gift_codes(args.plan, args.count, args.note,
+                                        args.expires_days)
+        title = PLANS[args.plan]["title"]
+        print("%s兑换码（%d 天）：" % (title, codes[0]["days"]))
+        for item in codes:
+            print("  " + item["code"])
+        if args.expires_days:
+            print("兑换码本身 %d 天内有效。" % args.expires_days)
+        print("把码发给对方，让对方在小程序「会员」里点「兑换码」输入即可。")
+        return 0
+
+    if args.cmd == "gift-list":
+        rows = store.list_gift_codes(args.limit)
+        if not rows:
+            print("还没有生成过兑换码。")
+            return 0
+        for row in rows:
+            state = "已兑换" if row["redeemed_by"] else "未兑换"
+            print("%s  %-14s %3d天  %s  %s" % (
+                format_code(row["code"]), row["plan"], row["days"], state,
+                row["note"] or ""))
+        return 0
+
     return 2
 
 

@@ -44,6 +44,19 @@
     font-size: 22rpx;
 }
 
+.member-redeem {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 2rpx solid #f1f4f9;
+    color: #2f5bc4;
+    font-size: 25rpx;
+    text-align: center;
+}
+
+.member-redeem:active {
+    opacity: 0.6;
+}
+
 .footer {
     padding: 8rpx 0 24rpx;
     text-align: center;
