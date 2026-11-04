@@ -30,10 +30,10 @@ padding:12px 15px;min-height:45px}.warning{font-size:12px;color:#97650f}
 <main class="wrap"><h1>让每份项目文件都有规范的名字</h1>
 <p class="muted">浏览器上传副本，提取文档关键词，预览后批量重命名，最后下载 ZIP；你的原始文件不会被直接修改。</p>
 <section class="card" aria-label="使用额度">
-<h2>使用额度与套餐</h2>
+<h2>使用额度与会员</h2>
 <div class="meta" id="billing-summary" aria-live="polite">正在查询本月可用额度…</div>
 <div class="meta">每月免费提供 20 个成功改名文件额度；额度按成功执行改名的文件数量扣除。撤销不返还额度。预览、上传和下载不扣额度。</div>
-<div class="meta" id="billing-packages">规划套餐：¥9.9 / 100 个文件；¥39 / 500 个文件。专业版 ¥29/月 仍在规划中。</div>
+<div class="meta" id="billing-packages">会员套餐：月度 ¥9.9/月，年度 ¥99/年；订阅期内不限改名次数。</div>
 <div class="warning">支付功能尚未开放，本站不会要求你转账。价格仅供产品测试，正式收费前另行公布。</div>
 </section>
 <section class="card"><h2><span class="step">01</span>上传文件</h2>
@@ -71,8 +71,18 @@ async function refreshBilling(){
   const res=await fetch("/api/billing/status",{credentials:"same-origin",cache:"no-store"});
   if(!res.ok)throw Error("额度查询失败");
   const info=await res.json();
-  $("billing-summary").textContent="本月免费剩余："+info.free_remaining+"/"+info.free_limit+
-    " 个 · 已购买剩余额度："+info.paid_balance+" 个 · 合计可用："+info.available+" 个";
+  if(info.member){
+    let until="";
+    if(info.member_until){
+      const d=new Date(info.member_until*1000);
+      until="（至 "+d.getFullYear()+"-"+
+        String(d.getMonth()+1).padStart(2,"0")+"-"+
+        String(d.getDate()).padStart(2,"0")+"）";
+    }
+    $("billing-summary").textContent="会员有效 · 不限改名次数"+until;
+    return;
+  }
+  $("billing-summary").textContent="本月免费剩余："+info.free_remaining+"/"+info.free_limit+" 个";
 }
 refreshBilling().catch(()=>{$("billing-summary").textContent="额度暂时无法查询，请刷新页面重试。";});
 async function api(route,data){
@@ -170,9 +180,9 @@ $("apply").onclick=async()=>{
     const result=await api("/api/workspaces/apply",{workspace:S.id,plan_token:S.plan});
     S.applied=true;S.plan="";$("download").disabled=false;$("undo").disabled=false;
     toggle(false);
+    const usedFree=result.billing?result.billing.free_units:0;
     notify("已整理 "+result.renamed+" 个文件，请下载 ZIP。"+
-           " 本次使用免费额度 "+(result.billing?.free_units||0)+
-           " 个、已购额度 "+(result.billing?.paid_units||0)+" 个。");
+           (usedFree>0?" 本次使用免费额度 "+usedFree+" 个。":" 会员期内不计次。"));
     refreshBilling().catch(()=>{});
   }catch(e){notify("执行失败："+e.message);}
 };

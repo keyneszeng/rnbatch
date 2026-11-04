@@ -7,18 +7,18 @@
 - 现阶段仍维持 **Web App 优先**；不改变原本 CLI/MCP 对本地文件的使用方式。
 - 每位登录用户每月（**UTC 月份**）免费成功改名 **20 个文件**。预览、上传和下载不消耗额度。
 - **按成功更名的文件数**计费，而不是按整个文件夹的文件数。成功执行后若用户撤销，也不退回已消耗额度（应在真实收费前收集用户反馈）。
-- 额度分两部分：每月免费额度（不结转）＋购买的预付文件额度（不随月末清零，当前无过期机制）。
+- 额度分两层：每月免费额度（不结转）＋**会员订阅**（订阅生效期内不限改名次数）。
+- 订阅价格：**月度 ¥9.9/月**、**年度 ¥99/年**。续费从原到期时间往后延，不吞掉剩余天数。
 - 额度变更由服务器以 SQLite 事务实现；请求者不能在 HTTP 中指定订单金额、修改使用量、手动增加额度或声称支付成功。
-- 提议价格（未验证，未开售）：100 文件 ¥9.90、500 文件 ¥39；¥29/月专业版仅展示为未来方案，**尚无自动续费功能**。
 - 明确标注：所有金额只是定价草案，实时线上付款不可用。
 
 ## 数据设计
 
 在原有 `users.sqlite3` 数据库里添加：
 
-- `billing_wallets`：按用户记录已购额度余额。
-- `billing_usage`：以 `workspace_id` 唯一键记录文件改名的预留额度、成功确认及 UTC 账期。
-- `billing_orders`：不可变的套餐价格快照、待处理与已核销状态、外部支付凭据唯一键。
+- `billing_subscriptions`：按用户记录生效中的订阅套餐与到期时间（UTC 秒）。
+- `billing_usage`：以 `workspace_id` 唯一键记录文件改名的预留额度、成功确认及 UTC 账期。会员用量记 0，不消耗免费额度。
+- `billing_orders`：不可变的套餐价格快照、待处理与已核销状态、外部支付凭据唯一键；`days` 记录该订单兑现的订阅天数。
 
 升级不会改写用户密码或现有登录表。运行新代码时自动创建这三个表。**部署前务必对 SQLite 数据库做安全备份。**
 
@@ -36,13 +36,13 @@
 
 用户登录后，GET 接口使用用户会话 Cookie：
 
-- `GET /api/billing/status`：查询当前 UTC 月份的免费余额与已购额度。
-- `GET /api/billing/catalog`：服务端定义的套餐和 `checkout_enabled: false`。
+- `GET /api/billing/status`：查询当前 UTC 月份的免费余额，以及会员是否生效、到期时间。
+- `GET /api/billing/catalog`：服务端定义的订阅套餐和 `checkout_enabled: false`。
 - `GET /api/billing/orders`：仅返回自己的订单。
 
-`POST /api/billing/orders` 接受 `{"sku":"pack100"}`（要求 Cookie、同源 Origin 和 CSRF），生成仅用于内部测试的 **pending** 订单，返回 `checkout_url: null`。没有客户端确认付款接口；账单信息不能被用户重写。最多允许五笔未完成订单，防止无限刷单。
+`POST /api/billing/orders` 接受 `{"sku":"member_monthly"}` 或 `{"sku":"member_yearly"}`（要求 Cookie、同源 Origin 和 CSRF），生成仅用于内部测试的 **pending** 订单，返回 `checkout_url: null`。没有客户端确认付款接口；账单信息不能被用户重写。最多允许五笔未完成订单，防止无限刷单。
 
-`POST /api/workspaces/apply` 自动按最终更名数量计费，额度不足时返回 HTTP **402**、`code: quota_exceeded`，不改动文件。其余旧 API 与文件上下限保持不变。
+`POST /api/workspaces/apply` 自动按最终更名数量计费：非会员超出免费额度时返回 HTTP **402**、`code: quota_exceeded`，不改动文件；会员直接放行且不计量。
 
 ## 手工核销接口（仅离线受信任管理员）
 

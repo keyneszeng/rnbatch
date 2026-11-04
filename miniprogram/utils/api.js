@@ -258,11 +258,31 @@ function billingStatus() {
             free_limit: 20,
             free_remaining: 20,
             free_used: 0,
-            paid_balance: 0,
+            member: false,
+            member_plan: null,
+            member_until: null,
+            unlimited: false,
             available: 20,
         });
     }
     return request('/api/billing/status', {}, 'GET');
+}
+
+function catalog() {
+    if (config.DEMO) {
+        return Promise.resolve({
+            ok: true,
+            currency: 'CNY',
+            free_files_per_month: 20,
+            checkout_enabled: false,
+            plans: [
+                { sku: 'member_monthly', title: '月度会员', price_cents: 990, days: 30 },
+                { sku: 'member_yearly', title: '年度会员', price_cents: 9900, days: 365 },
+            ],
+            notice: '订阅期内不限改名次数；支付通道尚未接入，当前无法在线购买。',
+        });
+    }
+    return request('/api/billing/catalog', {}, 'GET');
 }
 
 /**
@@ -304,5 +324,6 @@ module.exports = {
     undo: undo,
     removeWorkspace: removeWorkspace,
     billingStatus: billingStatus,
+    catalog: catalog,
     downloadArchive: downloadArchive,
 };

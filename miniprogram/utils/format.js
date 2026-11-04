@@ -62,6 +62,28 @@ function templateByKey(key) {
     return TEMPLATES[0];
 }
 
+/**
+ * 套餐价格文案：990 分 / 30 天 → ¥9.9/月，9900 分 / 365 天 → ¥99/年。
+ * 按天数判断周期，避免在数据里再存一个周期字段。
+ */
+function planPriceText(priceCents, days) {
+    const yuan = Number(priceCents) / 100;
+    const price = '¥' + (Math.round(yuan * 100) % 100 === 0
+        ? String(Math.round(yuan))
+        : yuan.toFixed(1));
+    return price + (Number(days) >= 300 ? '/年' : '/月');
+}
+
+function dateText(epochSeconds) {
+    const n = Number(epochSeconds);
+    if (!n) return '';
+    const d = new Date(n * 1000);
+    const month = d.getMonth() + 1;
+    const day = d.getDate();
+    return d.getFullYear() + '-' + (month < 10 ? '0' + month : month) +
+        '-' + (day < 10 ? '0' + day : day);
+}
+
 module.exports = {
     extOf: extOf,
     typeOf: typeOf,
@@ -69,4 +91,6 @@ module.exports = {
     sizeText: sizeText,
     TEMPLATES: TEMPLATES,
     templateByKey: templateByKey,
+    planPriceText: planPriceText,
+    dateText: dateText,
 };

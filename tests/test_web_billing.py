@@ -2,9 +2,11 @@
 import concurrent.futures
 import json
 import socket
+import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -35,7 +37,7 @@ class TestBillingLedger(unittest.TestCase):
     def test_monthly_free_allocation_and_persistence(self):
         status = self.billing.status(self.alice)
         self.assertEqual(status["free_remaining"], FREE_FILES_PER_MONTH)
-        self.assertEqual(status["paid_balance"], 0)
+        self.assertFalse(status["member"])
         reservation = self.billing.reserve(self.alice, "workspace-a", 12)
         self.assertEqual(reservation, {"free_units": 12, "paid_units": 0, "renamed": 12})
         self.billing.settle(self.alice, "workspace-a")
@@ -71,41 +73,72 @@ class TestBillingLedger(unittest.TestCase):
         self.assertEqual(outcomes.count(False), 8)
         self.assertEqual(self.billing.status(self.alice)["available"], 0)
 
-    def test_order_snapshot_manual_fulfillment_idempotency_and_ref_uniqueness(self):
-        order = self.billing.create_order(self.alice, "pack100")
+    def test_order_fulfillment_is_idempotent_and_reference_is_unique(self):
+        order = self.billing.create_order(self.alice, "member_monthly")
         self.assertEqual(order["status"], "pending")
         self.assertIsNone(order["checkout_url"])
         self.assertFalse(self.billing.catalog()["checkout_enabled"])
-        self.assertEqual(self.billing.status(self.alice)["paid_balance"], 0)
+        self.assertFalse(self.billing.status(self.alice)["member"])
         with self.assertRaises(ValueError):
             self.billing.create_order(self.alice, "evil_sku")
         payment_ref = "verified-external-2026-001"
         confirmed = self.billing.confirm_offline(order["id"], payment_ref)
-        self.assertEqual(confirmed["credits"], 100)
+        self.assertEqual(confirmed["plan"], "member_monthly")
+        self.assertEqual(confirmed["days"], 30)
         self.assertFalse(confirmed["already_fulfilled"])
         self.assertTrue(self.billing.confirm_offline(order["id"], payment_ref)["already_fulfilled"])
-        self.assertEqual(self.billing.status(self.alice)["paid_balance"], 100)
+        self.assertTrue(self.billing.status(self.alice)["member"])
         with self.assertRaises(ValueError):
             self.billing.confirm_offline(order["id"], "verified-other-2026-002")
-        second = self.billing.create_order(self.alice, "pack500")
+        second = self.billing.create_order(self.alice, "member_yearly")
         with self.assertRaises(ValueError):
             self.billing.confirm_offline(second["id"], payment_ref)
-        self.assertEqual(self.billing.status(self.alice)["paid_balance"], 100)
         self.assertEqual(len(self.billing.orders(self.bob)), 0)
 
-    def test_paid_debit_release_and_separate_month(self):
-        order = self.billing.create_order(self.alice, "pack100")
-        self.billing.confirm_offline(order["id"], "verified-external-2026-003")
+    def test_subscription_bypasses_quota_and_renewal_extends(self):
+        order = self.billing.create_order(self.alice, "member_monthly")
+        first = self.billing.confirm_offline(order["id"], "verified-external-2026-003")
+
+        status = self.billing.status(self.alice)
+        self.assertTrue(status["member"])
+        self.assertTrue(status["unlimited"])
+        self.assertIsNone(status["available"])
+
+        # 订阅期内一次改 200 个也放行，远超每月 20 个的免费额度
+        allocation = self.billing.reserve(self.alice, "big-workspace", 200)
+        self.assertEqual(allocation["free_units"], 0)
+        self.billing.settle(self.alice, "big-workspace")
+        # 订阅用量不吃免费额度
+        self.assertEqual(self.billing.status(self.alice)["free_remaining"], 20)
+
+        # 续费从原到期时间往后延，不吞掉剩余天数
+        second = self.billing.create_order(self.alice, "member_monthly")
+        renewed = self.billing.confirm_offline(second["id"], "verified-external-2026-004")
+        self.assertEqual(renewed["expires_at"], first["expires_at"] + 30 * 86400)
+
+    def test_expired_subscription_falls_back_to_free_tier(self):
+        order = self.billing.create_order(self.alice, "member_monthly")
+        self.billing.confirm_offline(order["id"], "verified-external-2026-005")
+        conn = sqlite3.connect(str(self.db))
+        try:
+            conn.execute("UPDATE billing_subscriptions SET expires_at=? WHERE user_id=?",
+                         (int(time.time()) - 60, self.alice))
+            conn.commit()
+        finally:
+            conn.close()
+        status = self.billing.status(self.alice)
+        self.assertFalse(status["member"])
+        self.assertEqual(status["available"], 20)
+        with self.assertRaises(QuotaExceeded):
+            self.billing.reserve(self.alice, "over-quota", 21)
+
+    def test_free_tier_still_caps_non_members_across_months(self):
         self.billing.reserve(self.alice, "first-workspace", 20)
         self.billing.settle(self.alice, "first-workspace")
-        allocation = self.billing.reserve(self.alice, "second-workspace", 11)
-        self.assertEqual((allocation["free_units"], allocation["paid_units"]), (0, 11))
-        self.assertEqual(self.billing.status(self.alice)["paid_balance"], 89)
-        self.billing.release(self.alice, "second-workspace")
-        self.assertEqual(self.billing.status(self.alice)["paid_balance"], 100)
+        with self.assertRaises(QuotaExceeded):
+            self.billing.reserve(self.alice, "second-workspace", 1)
         with patch.object(BillingStore, "_period", return_value="2030-01"):
             self.assertEqual(self.billing.status(self.alice)["free_remaining"], 20)
-            self.assertEqual(self.billing.status(self.alice)["paid_balance"], 100)
 
 
 class TestBillingRoutes(unittest.TestCase):
@@ -168,10 +201,11 @@ class TestBillingRoutes(unittest.TestCase):
         bob_cookie, bob_csrf = self.login("bobby", "AnotherStrongPassword!")
         status, data, _ = self.request("/api/billing/status", cookie=alice_cookie)
         self.assertEqual((status, data["available"]), (200, 20))
-        status, _, _ = self.request("/api/billing/orders", {"sku":"pack100"},
+        self.assertFalse(data["member"])
+        status, _, _ = self.request("/api/billing/orders", {"sku": "member_monthly"},
                                     cookie=alice_cookie)
         self.assertEqual(status, 403)
-        status, order, _ = self.request("/api/billing/orders", {"sku":"pack100"},
+        status, order, _ = self.request("/api/billing/orders", {"sku": "member_monthly"},
                                         cookie=alice_cookie, csrf=alice_csrf)
         self.assertEqual(status, 200)
         self.assertEqual(order["status"], "pending")

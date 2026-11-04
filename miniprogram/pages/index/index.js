@@ -33,6 +33,9 @@ Page({
         templates: fmt.TEMPLATES,
         templateKey: 'std',
         quotaText: '',
+        member: false,
+        plans: [],
+        checkoutEnabled: false,
         scanning: false,
         busyText: '',
         canPreview: false,
@@ -42,6 +45,7 @@ Page({
     onLoad() {
         this.workspace = '';
         this.refreshQuota();
+        this.refreshPlans();
     },
 
     onShow() {
@@ -66,12 +70,36 @@ Page({
     async refreshQuota() {
         try {
             const info = await api.billingStatus();
-            this.setData({
-                quotaText: '本月免费剩余 ' + info.free_remaining + '/' + info.free_limit +
-                    ' 个 · 已购 ' + info.paid_balance + ' 个',
-            });
+            let text;
+            if (info.member) {
+                text = '会员有效 · 不限次数';
+                if (info.member_until) {
+                    text += '（至 ' + fmt.dateText(info.member_until) + '）';
+                }
+            } else {
+                text = '本月免费剩余 ' + info.free_remaining + '/' + info.free_limit + ' 个';
+            }
+            this.setData({ quotaText: text, member: !!info.member });
         } catch (e) {
             this.setData({ quotaText: '额度暂时无法查询' });
+        }
+    },
+
+    async refreshPlans() {
+        try {
+            const info = await api.catalog();
+            const raw = info.plans || [];
+            const plans = [];
+            for (let i = 0; i < raw.length; i += 1) {
+                plans.push({
+                    sku: raw[i].sku,
+                    title: raw[i].title,
+                    priceText: fmt.planPriceText(raw[i].price_cents, raw[i].days),
+                });
+            }
+            this.setData({ plans: plans, checkoutEnabled: !!info.checkout_enabled });
+        } catch (e) {
+            this.setData({ plans: [] });
         }
     },
 

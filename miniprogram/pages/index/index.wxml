@@ -100,6 +100,18 @@
         </view>
     </view>
 
+    <view class="card" wx:if="{{plans.length > 0}}">
+        <view class="card-head">
+            <text class="card-title">会员</text>
+            <text class="card-note">订阅期内不限次数</text>
+        </view>
+        <view class="member-plan" wx:for="{{plans}}" wx:key="sku">
+            <text class="member-plan-title">{{item.title}}</text>
+            <text class="member-plan-price">{{item.priceText}}</text>
+        </view>
+        <view class="member-note" wx:if="{{!checkoutEnabled}}">支付通道接入中，暂未开放购买</view>
+    </view>
+
     <view class="footer">
         <text class="footer-link" bindtap="openPrivacy">隐私说明</text>
     </view>

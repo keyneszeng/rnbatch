@@ -1,9 +1,14 @@
-"""Prepaid usage accounting for the authenticated rnbatch Web App.
+"""Subscription accounting for the authenticated rnbatch Web App.
 
-This module deliberately does NOT charge cards or accept browser payment success.
-A trusted operator may confirm an externally verified payment via the CLI.
-All prices are illustrative and checkout is disabled until a real provider,
-merchant account, privacy/security review and refund policy are configured.
+The free tier stays a monthly file allowance. Paid access is a subscription:
+while it is active, renaming is not metered at all.
+
+This module still does NOT charge cards or accept a browser's claim of payment.
+`confirm_offline` is the only way to activate a subscription, and it is a CLI
+operation for a trusted operator after independently verifying the money
+arrived. Wiring a real payment provider (WeChat virtual payment, Stripe, …)
+means calling `create_order` and then `fulfill_order` from that provider's
+verified callback — never from the browser.
 """
 from __future__ import annotations
 
@@ -19,17 +24,15 @@ from pathlib import Path
 
 FREE_FILES_PER_MONTH = 20
 
-# Snapshot order economics at creation; never accept amount/credits from HTTP.
-PACKAGES = {
-    "pack100": {"title": "100 文件额度包", "price_cents": 990, "credits": 100},
-    "pack500": {"title": "500 文件额度包", "price_cents": 3900, "credits": 500},
+# 价格快照在创建订单时写入，绝不接受 HTTP 传来的金额。
+PLANS = {
+    "member_monthly": {"title": "月度会员", "price_cents": 990, "days": 30},
+    "member_yearly": {"title": "年度会员", "price_cents": 9900, "days": 365},
 }
-PROPOSAL = {"title": "专业版（月订阅，规划中）", "price_cents": 2900,
-            "credits": 1000, "enabled": False}
 
 
 class QuotaExceeded(ValueError):
-    """There are fewer available processing credits than renamed files."""
+    """免费额度不足以覆盖本次改名，且没有生效中的订阅。"""
 
 
 class BillingStore:
@@ -40,11 +43,6 @@ class BillingStore:
         self._lock = threading.RLock()
         with self._connect() as db:
             db.executescript("""
-                CREATE TABLE IF NOT EXISTS billing_wallets (
-                    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-                    purchased_balance INTEGER NOT NULL DEFAULT 0
-                        CHECK(purchased_balance >= 0)
-                );
                 CREATE TABLE IF NOT EXISTS billing_usage (
                     workspace_id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -56,12 +54,18 @@ class BillingStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_billing_usage_user_period
                     ON billing_usage(user_id, period);
+                CREATE TABLE IF NOT EXISTS billing_subscriptions (
+                    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                    plan TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS billing_orders (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     sku TEXT NOT NULL,
                     price_cents INTEGER NOT NULL CHECK(price_cents > 0),
-                    credits INTEGER NOT NULL CHECK(credits > 0),
+                    days INTEGER NOT NULL CHECK(days > 0),
                     status TEXT NOT NULL CHECK(status IN ('pending','fulfilled')),
                     payment_reference TEXT UNIQUE,
                     created_at INTEGER NOT NULL,
@@ -92,13 +96,11 @@ class BillingStore:
             "currency": "CNY",
             "free_files_per_month": FREE_FILES_PER_MONTH,
             "checkout_enabled": False,
-            "packages": [
-                {"sku": sku, **values} for sku, values in PACKAGES.items()
-            ],
-            "proposed_subscription": PROPOSAL,
-            "notice": "仅为价格方案；未接入支付，无法在线付款。",
+            "plans": [{"sku": sku, **values} for sku, values in PLANS.items()],
+            "notice": "订阅期内不限改名次数；支付通道尚未接入，当前无法在线购买。",
         }
 
+    # ------------------------------------------------------------ 内部
     @staticmethod
     def _assert_user(db, user_id: str):
         if not isinstance(user_id, str) or not db.execute(
@@ -112,27 +114,45 @@ class BillingStore:
             WHERE user_id=? AND period=?
         """, (user_id, period)).fetchone()[0])
 
+    def _subscription(self, db, user_id: str) -> dict | None:
+        row = db.execute(
+            "SELECT plan, expires_at FROM billing_subscriptions WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
+        if row is None or int(row["expires_at"]) <= int(time.time()):
+            return None
+        return {"plan": row["plan"], "expires_at": int(row["expires_at"])}
+
+    # ------------------------------------------------------------ 查询
     def status(self, user_id: str) -> dict:
         period = self._period()
         with self._connect() as db:
             self._assert_user(db, user_id)
             free_used = self._usage(db, user_id, period)
-            wallet = db.execute(
-                "SELECT purchased_balance FROM billing_wallets WHERE user_id=?",
-                (user_id,)
-            ).fetchone()
-        paid = int(wallet[0]) if wallet else 0
+            subscription = self._subscription(db, user_id)
         free_remaining = max(0, FREE_FILES_PER_MONTH - free_used)
-        return {"ok": True, "period": period, "free_limit": FREE_FILES_PER_MONTH,
-                "free_used": free_used, "free_remaining": free_remaining,
-                "paid_balance": paid, "available": free_remaining + paid,
-                "currency": "CNY", "checkout_enabled": False}
+        active = subscription is not None
+        return {
+            "ok": True,
+            "period": period,
+            "free_limit": FREE_FILES_PER_MONTH,
+            "free_used": free_used,
+            "free_remaining": free_remaining,
+            "member": active,
+            "member_plan": subscription["plan"] if active else None,
+            "member_until": subscription["expires_at"] if active else None,
+            "unlimited": active,
+            "available": None if active else free_remaining,
+            "currency": "CNY",
+            "checkout_enabled": False,
+        }
 
+    # ------------------------------------------------------------ 计量
     def reserve(self, user_id: str, workspace_id: str, count: int) -> dict:
-        """Atomic and durable reservation BEFORE a filesystem rename.
+        """改名落盘之前先占用额度；订阅生效时不计量。
 
-        Pending reservations consume quota, so parallel requests cannot
-        overspend. release() restores paid credits on a failed rename.
+        待结算的预留同样计入已用额度，所以并发请求不会超支。
+        改名失败时由 release() 归还。
         """
         if not isinstance(workspace_id, str) or not workspace_id or len(workspace_id) > 128:
             raise ValueError("工作区 ID 无效")
@@ -145,25 +165,21 @@ class BillingStore:
             if db.execute("SELECT 1 FROM billing_usage WHERE workspace_id=?",
                           (workspace_id,)).fetchone():
                 raise ValueError("该工作区的执行额度已使用，请创建新工作区")
-            free_remaining = max(0, FREE_FILES_PER_MONTH - self._usage(db, user_id, period))
-            free_units = min(free_remaining, count)
-            paid_units = count - free_units
-            row = db.execute(
-                "SELECT purchased_balance FROM billing_wallets WHERE user_id=?",
-                (user_id,)
-            ).fetchone()
-            paid_balance = int(row[0]) if row else 0
-            if paid_units > paid_balance:
-                raise QuotaExceeded("额度不足：请减少本次改名文件数或等待下月免费额度刷新")
-            if paid_units:
-                db.execute("""UPDATE billing_wallets SET purchased_balance =
-                              purchased_balance - ? WHERE user_id=?""",
-                           (paid_units, user_id))
+            if self._subscription(db, user_id) is not None:
+                free_units = 0
+            else:
+                free_remaining = max(0, FREE_FILES_PER_MONTH - self._usage(db, user_id, period))
+                if free_remaining < count:
+                    raise QuotaExceeded(
+                        "免费额度不足：本月剩余 %d 个，本次需要 %d 个。"
+                        "可以等额度刷新，或开通会员后不限次数。"
+                        % (free_remaining, count))
+                free_units = count
             db.execute("""INSERT INTO billing_usage
                        (workspace_id,user_id,period,free_units,paid_units,state,created_at)
-                       VALUES (?,?,?,?,?,'reserved',?)""",
-                       (workspace_id, user_id, period, free_units, paid_units, int(time.time())))
-        return {"free_units": free_units, "paid_units": paid_units, "renamed": count}
+                       VALUES (?,?,?,?,0,'reserved',?)""",
+                       (workspace_id, user_id, period, free_units, int(time.time())))
+        return {"free_units": free_units, "paid_units": 0, "renamed": count}
 
     def settle(self, user_id: str, workspace_id: str) -> None:
         with self._lock, self._connect() as db:
@@ -175,27 +191,19 @@ class BillingStore:
                 raise ValueError("未找到待结算的额度预留")
 
     def release(self, user_id: str, workspace_id: str) -> None:
-        """Refund ONLY an uncommitted reservation. Never refund settled use."""
+        """只退还尚未结算的预留；已结算的使用不退。"""
         with self._lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("""SELECT paid_units FROM billing_usage
+            db.execute("""DELETE FROM billing_usage
                     WHERE user_id=? AND workspace_id=? AND state='reserved'""",
-                    (user_id, workspace_id)).fetchone()
-            if row is None:
-                return
-            db.execute("DELETE FROM billing_usage WHERE user_id=? AND workspace_id=? AND state='reserved'",
-                       (user_id, workspace_id))
-            if row[0]:
-                db.execute("""INSERT INTO billing_wallets(user_id,purchased_balance)
-                    VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET
-                    purchased_balance=purchased_balance+excluded.purchased_balance""",
-                    (user_id, int(row[0])))
+                    (user_id, workspace_id))
 
+    # ------------------------------------------------------------ 订单
     def create_order(self, user_id: str, sku: str) -> dict:
-        """Create an unpayable draft order; the browser cannot fulfill it."""
-        if not isinstance(sku, str) or sku not in PACKAGES:
-            raise ValueError("不存在该额度套餐")
-        pack = PACKAGES[sku]
+        """创建待支付订单；浏览器无法自行把它变成已支付。"""
+        if not isinstance(sku, str) or sku not in PLANS:
+            raise ValueError("不存在该订阅套餐")
+        plan = PLANS[sku]
         ident = uuid.uuid4().hex
         with self._lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -203,28 +211,29 @@ class BillingStore:
             pending = db.execute("""SELECT COUNT(*) FROM billing_orders
                        WHERE user_id=? AND status='pending'""", (user_id,)).fetchone()[0]
             if pending >= 5:
-                raise ValueError("待处理订单过多，请联系管理员")
+                raise ValueError("待处理订单过多，请稍后再试")
             db.execute("""INSERT INTO billing_orders
-                (id,user_id,sku,price_cents,credits,status,created_at)
+                (id,user_id,sku,price_cents,days,status,created_at)
                 VALUES (?,?,?,?,?,'pending',?)""",
-                (ident, user_id, sku, pack["price_cents"], pack["credits"], int(time.time())))
+                (ident, user_id, sku, plan["price_cents"], plan["days"], int(time.time())))
         return {"ok": True, "id": ident, "sku": sku,
-                "price_cents": pack["price_cents"], "credits": pack["credits"],
+                "price_cents": plan["price_cents"], "days": plan["days"],
                 "status": "pending", "checkout_url": None,
-                "notice": "尚未接入支付；订单仅供内部商业化测试，不应汇款。"}
+                "notice": "支付通道尚未接入，订单暂时无法支付。"}
 
     def orders(self, user_id: str, limit: int = 20) -> list[dict]:
         with self._connect() as db:
             self._assert_user(db, user_id)
-            rows = db.execute("""SELECT id,sku,price_cents,credits,status,created_at,fulfilled_at
+            rows = db.execute("""SELECT id,sku,price_cents,days,status,created_at,fulfilled_at
                 FROM billing_orders WHERE user_id=?
                 ORDER BY created_at DESC,id DESC LIMIT ?""", (user_id, limit)).fetchall()
         return [dict(row) for row in rows]
 
-    def confirm_offline(self, order_id: str, payment_reference: str) -> dict:
-        """ADMIN CLI ONLY. Call AFTER independently verifying cleared payment.
+    def fulfill_order(self, order_id: str, payment_reference: str) -> dict:
+        """订单履约：把订阅到期时间往后延。
 
-        This operation is intentionally not reachable through any HTTP route.
+        只能由可信来源调用——现在走 CLI，将来接支付回调时，必须是
+        provider 验签通过之后的那一步。
         """
         if not isinstance(order_id, str) or not re.fullmatch(r"[a-f0-9]{32}", order_id):
             raise ValueError("订单编号不正确")
@@ -233,14 +242,15 @@ class BillingStore:
             raise ValueError("外部支付凭证编号格式不正确")
         with self._lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("""SELECT user_id,credits,status,payment_reference
+            row = db.execute("""SELECT user_id,sku,days,status,payment_reference
                 FROM billing_orders WHERE id=?""", (order_id,)).fetchone()
             if row is None:
                 raise ValueError("订单不存在")
             if row["status"] == "fulfilled":
                 if row["payment_reference"] != payment_reference:
                     raise ValueError("订单已通过不同支付凭证核销")
-                return {"ok": True, "already_fulfilled": True, "credits": int(row["credits"])}
+                return {"ok": True, "already_fulfilled": True,
+                        "plan": row["sku"], "days": int(row["days"])}
             try:
                 cursor = db.execute("""UPDATE billing_orders SET status='fulfilled',
                     payment_reference=?,fulfilled_at=? WHERE id=? AND status='pending'""",
@@ -249,11 +259,26 @@ class BillingStore:
                 raise ValueError("该外部支付凭证已核销其他订单") from exc
             if cursor.rowcount != 1:
                 raise ValueError("订单状态已变化")
-            db.execute("""INSERT INTO billing_wallets(user_id,purchased_balance)
-                VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET
-                purchased_balance=purchased_balance+excluded.purchased_balance""",
-                (row["user_id"], int(row["credits"])))
-        return {"ok": True, "already_fulfilled": False, "credits": int(row["credits"])}
+
+            days = int(row["days"])
+            now = int(time.time())
+            current = db.execute(
+                "SELECT expires_at FROM billing_subscriptions WHERE user_id=?",
+                (row["user_id"],)).fetchone()
+            # 续费从现有到期时间往后延，不吞掉剩余天数
+            base = max(now, int(current[0])) if current else now
+            expires = base + days * 86400
+            db.execute("""INSERT INTO billing_subscriptions
+                (user_id,plan,expires_at,updated_at) VALUES (?,?,?,?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                plan=excluded.plan, expires_at=excluded.expires_at,
+                updated_at=excluded.updated_at""",
+                (row["user_id"], row["sku"], expires, now))
+        return {"ok": True, "already_fulfilled": False,
+                "plan": row["sku"], "days": days, "expires_at": expires}
+
+    # 兼容旧调用点与 CLI 措辞
+    confirm_offline = fulfill_order
 
 
 def main(argv=None) -> int:
@@ -268,7 +293,7 @@ def main(argv=None) -> int:
     if args.cmd == "confirm-offline":
         result = BillingStore(args.db).confirm_offline(
             args.order, args.payment_reference)
-        print("已处理订单；增加额度:", result["credits"],
+        print("已履约；套餐:", result["plan"], "天数:", result["days"],
               " (已处理过)" if result["already_fulfilled"] else "")
         return 0
     return 2
