@@ -6,7 +6,7 @@
     "pages/privacy/privacy"
   ],
   "window": {
-    "navigationBarTitleText": "rnbatch 文件整理",
+    "navigationBarTitleText": "文件改名",
     "navigationBarBackgroundColor": "#ffffff",
     "navigationBarTextStyle": "black",
     "backgroundColor": "#f4f6fa",

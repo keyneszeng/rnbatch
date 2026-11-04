@@ -23,11 +23,12 @@ button {
     padding: 8rpx 4rpx 28rpx;
 }
 
-.hero-brand {
-    font-size: 46rpx;
-    font-weight: 700;
-    letter-spacing: -1rpx;
+.hero-title {
     color: #1b2437;
+    font-size: 40rpx;
+    font-weight: 600;
+    letter-spacing: -0.5rpx;
+    line-height: 1.45;
 }
 
 .hero-sub {

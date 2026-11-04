@@ -1,7 +1,7 @@
 <view class="page">
     <view class="hero">
-        <text class="hero-brand">rnbatch</text>
-        <text class="hero-sub">把一堆乱名字的文件，整理成一套规范名。你的原始文件不会被修改。</text>
+        <text class="hero-title">让一批文件，叫同一个名字</text>
+        <text class="hero-sub">从聊天或相册选文件，统一改名后打包取回。你的原始文件不会被修改。</text>
     </view>
 
     <view class="quota">

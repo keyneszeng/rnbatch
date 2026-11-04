@@ -1,7 +1,6 @@
 <view class="page">
     <view class="hero">
-        <text class="hero-brand">隐私说明</text>
-        <text class="hero-sub">rnbatch 只处理你主动选择的文件，不扫描、不外传。</text>
+        <text class="hero-sub">文件改名只处理你主动选择的文件，不扫描、不外传。</text>
     </view>
 
     <view class="card">
